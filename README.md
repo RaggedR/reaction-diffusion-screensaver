@@ -2,6 +2,8 @@
 
 Two browser-based screen savers that respond to music through your microphone.
 
+**[Try Reaction-Diffusion](https://raggedr.github.io/reaction-diffusion-screensaver/)** | **[Try Fluid Dynamics](https://raggedr.github.io/reaction-diffusion-screensaver/fluid.html)**
+
 ## Reaction-Diffusion
 
 [Gray-Scott](https://groups.csail.mit.edu/mac/projects/amorphous/GrayScott/) maze patterns that reconfigure on the beat. Expanding ripple waves travel from the center of the screen, forcing the maze to reorganise as they pass through — a wavefront of destruction followed by regrowth. Colours drift slowly through greens, teals, blues, and purples.
