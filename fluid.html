@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fluid Screen Saver</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #start-overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.92);
+      color: #555; font-family: system-ui, sans-serif; font-size: 1.2rem;
+      cursor: pointer; z-index: 10;
+      transition: opacity 0.5s;
+    }
+    #start-overlay.hidden { opacity: 0; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="start-overlay">Click to start</div>
+  <script type="module" src="/src/fluidMain.js"></script>
+</body>
+</html>
