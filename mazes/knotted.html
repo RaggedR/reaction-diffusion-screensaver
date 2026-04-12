@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Knotted Maze</title>
+<style>
+* { margin: 0; padding: 0; }
+body { background: #06060e; overflow: hidden; cursor: none; }
+canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const BG = '#06060e';
+
+// ── Configuration ─────────────────────────────────────
+const CROSSING_FRAC = 0.50;
+const SURGERY_INTERVAL = 4000;
+
+// ── Layout ────────────────────────────────────────────
+let ROWS, COLS, CELL, PAD_X, PAD_Y, totalW, gap, wipeW;
+
+function setup() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  CELL = Math.max(36, Math.min(64, Math.floor(Math.min(canvas.width, canvas.height) / 14)));
+  COLS = Math.floor(canvas.width / CELL);
+  ROWS = Math.floor(canvas.height / CELL);
+  PAD_X = Math.round((canvas.width - COLS * CELL) / 2);
+  PAD_Y = Math.round((canvas.height - ROWS * CELL) / 2);
+  totalW = Math.max(6, Math.round(CELL * 0.28));
+  gap = Math.max(2, Math.round(totalW * 0.57));
+  wipeW = Math.round(totalW * 1.22);
+}
+
+function px(c) { return PAD_X + c * CELL + CELL / 2; }
+function py(r) { return PAD_Y + r * CELL + CELL / 2; }
+
+// ── Expanded graph model ──────────────────────────────
+//
+// Each grid cell is either normal (one node) or a crossing (two nodes).
+// Normal node key:   "r,c"
+// V-channel node:    "r,cV"   (handles N and S connections)
+// H-channel node:    "r,cH"   (handles E and W connections)
+
+let crossingCells; // Set of "r,c" — cells designated as crossings
+let edges;         // Set of edge keys between expanded graph nodes
+let parentMap;     // nodeKey → parentNodeKey (rooted tree)
+let dirs;          // Map: "r,c" → Set of {N,S,E,W}
+let crossingType;  // Map: "r,c" → "VH"|"HV" (which strand is on top)
+
+function cellKey(r, c) { return `${r},${c}`; }
+
+function nodeForDir(r, c, dir) {
+  const ck = cellKey(r, c);
+  if (crossingCells.has(ck)) {
+    return (dir === 'N' || dir === 'S') ? ck + 'V' : ck + 'H';
+  }
+  return ck;
+}
+
+function cellOfNode(nk) {
+  // "3,5" → "3,5", "3,5V" → "3,5", "3,5H" → "3,5"
+  return nk.replace(/[VH]$/, '');
+}
+
+function nodeEdgeKey(n1, n2) {
+  return n1 < n2 ? n1 + '-' + n2 : n2 + '-' + n1;
+}
+
+function allExpandedNodes() {
+  const nodes = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      const ck = cellKey(r, c);
+      if (crossingCells.has(ck)) {
+        nodes.push(ck + 'V', ck + 'H');
+      } else {
+        nodes.push(ck);
+      }
+    }
+  return nodes;
+}
+
+function allExpandedEdges() {
+  // Returns [{u, v, c1, c2}] where u,v are node keys, c1,c2 are cell keys
+  const result = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      if (r + 1 < ROWS) {
+        const u = nodeForDir(r, c, 'S');
+        const v = nodeForDir(r + 1, c, 'N');
+        result.push({ u, v, c1: cellKey(r, c), c2: cellKey(r + 1, c) });
+      }
+      if (c + 1 < COLS) {
+        const u = nodeForDir(r, c, 'E');
+        const v = nodeForDir(r, c + 1, 'W');
+        result.push({ u, v, c1: cellKey(r, c), c2: cellKey(r, c + 1) });
+      }
+    }
+  return result;
+}
+
+// ── Union-Find ────────────────────────────────────────
+
+function makeUF(keys) {
+  const p = {}, rk = {};
+  for (const k of keys) { p[k] = k; rk[k] = 0; }
+  const find = x => { while (p[x] !== x) { p[x] = p[p[x]]; x = p[x]; } return x; };
+  const union = (a, b) => {
+    let ra = find(a), rb = find(b);
+    if (ra === rb) return false;
+    if (rk[ra] < rk[rb]) [ra, rb] = [rb, ra];
+    p[rb] = ra;
+    if (rk[ra] === rk[rb]) rk[ra]++;
+    return true;
+  };
+  return { find, union };
+}
+
+// ── Maze generation: Kruskal's on expanded graph ──────
+
+function genMaze() {
+  // Pick crossing cells (interior only)
+  crossingCells = new Set();
+  const interior = [];
+  for (let r = 1; r < ROWS - 1; r++)
+    for (let c = 1; c < COLS - 1; c++)
+      interior.push(cellKey(r, c));
+  shuffle(interior);
+  const numCrossings = Math.max(4, Math.floor(interior.length * CROSSING_FRAC));
+  for (let i = 0; i < Math.min(numCrossings, interior.length); i++)
+    crossingCells.add(interior[i]);
+
+  // Build expanded graph and run Kruskal's
+  const nodes = allExpandedNodes();
+  const graphEdges = allExpandedEdges();
+  shuffle(graphEdges);
+
+  // Prioritise crossing-adjacent edges
+  graphEdges.sort((a, b) => {
+    const ac = crossingCells.has(a.c1) || crossingCells.has(a.c2) ? 0 : 1;
+    const bc = crossingCells.has(b.c1) || crossingCells.has(b.c2) ? 0 : 1;
+    return ac - bc;
+  });
+
+  const uf = makeUF(nodes);
+  edges = new Set();
+  for (const { u, v } of graphEdges) {
+    if (uf.union(u, v)) {
+      edges.add(nodeEdgeKey(u, v));
+    }
+  }
+}
+
+// ── Cell classification ───────────────────────────────
+
+function classifyCells() {
+  dirs = {};
+  crossingType = {};
+
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      dirs[cellKey(r, c)] = new Set();
+
+  // Walk edges to determine cell directions
+  for (const ek of edges) {
+    const [n1, n2] = ek.split('-');
+    const ck1 = cellOfNode(n1), ck2 = cellOfNode(n2);
+    if (ck1 === ck2) continue; // shouldn't happen
+
+    const [r1, c1] = ck1.split(',').map(Number);
+    const [r2, c2] = ck2.split(',').map(Number);
+
+    if (r2 < r1) { dirs[ck1].add('N'); dirs[ck2].add('S'); }
+    if (r2 > r1) { dirs[ck1].add('S'); dirs[ck2].add('N'); }
+    if (c2 > c1) { dirs[ck1].add('E'); dirs[ck2].add('W'); }
+    if (c2 < c1) { dirs[ck1].add('W'); dirs[ck2].add('E'); }
+  }
+
+  // Only cells with ALL 4 directions get crossing rendering.
+  // crossingCells is NEVER modified — it defines the topology (V/H nodes).
+  // crossingType only controls which cells RENDER as crossings.
+  for (const ck of crossingCells) {
+    const d = dirs[ck];
+    if (d.has('N') && d.has('S') && d.has('E') && d.has('W')) {
+      crossingType[ck] = Math.random() < 0.5 ? 'VH' : 'HV';
+    }
+  }
+}
+
+// ── Adjacency on expanded graph ───────────────────────
+
+function buildExpandedAdj() {
+  const adj = {};
+  for (const nk of allExpandedNodes()) adj[nk] = [];
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    if (adj[a]) adj[a].push(b);
+    if (adj[b]) adj[b].push(a);
+  }
+  return adj;
+}
+
+// ── BFS depth + solution ──────────────────────────────
+
+let depthMap = {}, maxDepth = 0, solutionPath = [];
+let nodeGen = {};   // nodeKey → generation (tracks V and H channels independently)
+let generation = 0;
+let surgeryQueue = [], surgeryRevealIdx = 0, surgeryStartTime = 0;
+
+function computeDepth() {
+  // BFS from center cell on expanded graph, map back to cells
+  const adj = buildExpandedAdj();
+  const centerCk = cellKey(Math.floor(ROWS / 2), Math.floor(COLS / 2));
+  const startNode = crossingCells.has(centerCk) ? centerCk + 'V' : centerCk;
+
+  const nodeDepth = { [startNode]: 0 };
+  const q = [startNode];
+  for (let h = 0; h < q.length; h++)
+    for (const nb of (adj[q[h]] || []))
+      if (!(nb in nodeDepth)) { nodeDepth[nb] = nodeDepth[q[h]] + 1; q.push(nb); }
+
+  depthMap = {}; maxDepth = 0;
+  for (const [nk, d] of Object.entries(nodeDepth)) {
+    const ck = cellOfNode(nk);
+    if (!(ck in depthMap) || d < depthMap[ck]) depthMap[ck] = d;
+    if (d > maxDepth) maxDepth = d;
+  }
+}
+
+function computeSolution() {
+  // BFS on expanded graph from (0,0) to (ROWS-1,COLS-1)
+  const adj = buildExpandedAdj();
+  const startCk = cellKey(0, 0);
+  const endCk = cellKey(ROWS - 1, COLS - 1);
+  const startNode = crossingCells.has(startCk) ? startCk + 'V' : startCk;
+
+  const endNodes = new Set();
+  if (crossingCells.has(endCk)) { endNodes.add(endCk + 'V'); endNodes.add(endCk + 'H'); }
+  else endNodes.add(endCk);
+
+  const par = { [startNode]: null };
+  const q = [startNode];
+  let found = null;
+  for (let h = 0; h < q.length && !found; h++) {
+    if (endNodes.has(q[h])) { found = q[h]; break; }
+    for (const nb of (adj[q[h]] || []))
+      if (!(nb in par)) { par[nb] = q[h]; q.push(nb); }
+  }
+
+  solutionPath = [];
+  if (found) {
+    let cur = found;
+    const nodePath = [];
+    while (cur) { nodePath.push(cur); cur = par[cur]; }
+    nodePath.reverse();
+    // Map to cells, remove duplicates
+    let prev = null;
+    for (const nk of nodePath) {
+      const ck = cellOfNode(nk);
+      if (ck !== prev) { solutionPath.push(ck); prev = ck; }
+    }
+  }
+}
+
+// ── Tree surgery on expanded graph ────────────────────
+
+function buildParentMap() {
+  const adj = buildExpandedAdj();
+  const startCk = cellKey(0, 0);
+  const root = crossingCells.has(startCk) ? startCk + 'V' : startCk;
+  parentMap = { [root]: null };
+  const vis = new Set([root]), q = [root];
+  for (let h = 0; h < q.length; h++)
+    for (const nb of (adj[q[h]] || []))
+      if (!vis.has(nb)) { vis.add(nb); parentMap[nb] = q[h]; q.push(nb); }
+}
+
+function getSubtreeNodes(nodeKey) {
+  const adj = buildExpandedAdj();
+  const sub = new Set([nodeKey]), st = [nodeKey];
+  while (st.length) {
+    const n = st.pop();
+    for (const nb of (adj[n] || []))
+      if (!sub.has(nb) && parentMap[nb] === n) { sub.add(nb); st.push(nb); }
+  }
+  return sub;
+}
+
+function regrowSubtree(nodeKey) {
+  const subNodes = getSubtreeNodes(nodeKey);
+  if (subNodes.size <= 1) return new Set();
+
+  // Remove internal edges (both endpoints in subtree)
+  for (const ek of [...edges]) {
+    const [a, b] = ek.split('-');
+    if (subNodes.has(a) && subNodes.has(b)) edges.delete(ek);
+  }
+
+  // Build subgraph edges (between nodes in subtree)
+  const subEdges = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      if (r + 1 < ROWS) {
+        const u = nodeForDir(r, c, 'S'), v = nodeForDir(r + 1, c, 'N');
+        if (subNodes.has(u) && subNodes.has(v))
+          subEdges.push({ u, v });
+      }
+      if (c + 1 < COLS) {
+        const u = nodeForDir(r, c, 'E'), v = nodeForDir(r, c + 1, 'W');
+        if (subNodes.has(u) && subNodes.has(v))
+          subEdges.push({ u, v });
+      }
+    }
+
+  // Kruskal's on subgraph
+  shuffle(subEdges);
+  const uf = makeUF([...subNodes]);
+  for (const { u, v } of subEdges) {
+    if (uf.union(u, v)) edges.add(nodeEdgeKey(u, v));
+  }
+
+  buildParentMap();
+
+  // Map affected nodes to cells
+  const affectedCells = new Set();
+  for (const nk of subNodes) affectedCells.add(cellOfNode(nk));
+  return affectedCells;
+}
+
+// ── Drawing helpers ───────────────────────────────────
+
+function colorForGen(gen, r, c) {
+  const hue = (gen * 137.508 + 45) % 360;
+  const ck = cellKey(r, c);
+  const d = depthMap[ck] || 0;
+  const t = maxDepth > 0 ? d / maxDepth : 0;
+  const l = 58 - t * 8;
+  return `hsl(${hue}, 72%, ${l}%)`;
+}
+
+function cellColor(r, c) {
+  const ck = cellKey(r, c);
+  if (crossingCells.has(ck)) return colorForGen(nodeGen[ck + 'V'] || 0, r, c);
+  // For normal/demoted cells, check bare key first, then V/H (demoted cells)
+  const gen = nodeGen[ck] ?? nodeGen[ck + 'V'] ?? nodeGen[ck + 'H'] ?? 0;
+  return colorForGen(gen, r, c);
+}
+
+function channelColor(r, c, channel) {
+  // channel: 'V' or 'H'
+  const ck = cellKey(r, c);
+  const nk = crossingCells.has(ck) ? ck + channel : ck;
+  return colorForGen(nodeGen[nk] || 0, r, c);
+}
+
+function portXY(r, c, d) {
+  const x = px(c), y = py(r), h = CELL / 2;
+  if (d === 'N') return [x, y - h];
+  if (d === 'S') return [x, y + h];
+  if (d === 'E') return [x + h, y];
+  return [x - h, y];
+}
+
+function strokeLine(x1, y1, x2, y2, color, w) {
+  ctx.lineCap = 'butt'; ctx.strokeStyle = color; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+}
+
+function strokeCurve(x1, y1, cx, cy, x2, y2, color, w) {
+  ctx.lineCap = 'butt'; ctx.strokeStyle = color; ctx.lineWidth = w;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(cx, cy, x2, y2); ctx.stroke();
+}
+
+function drawDeadEnd(r, c, dir, color) {
+  const cx = px(c), cy = py(r), h = CELL / 2, hw = totalW / 2;
+  const rw = (totalW - gap) / 2;
+  ctx.strokeStyle = color; ctx.lineWidth = rw; ctx.lineJoin = 'miter'; ctx.lineCap = 'butt';
+  ctx.beginPath();
+  if (dir === 'N') { ctx.moveTo(cx-hw, cy-h); ctx.lineTo(cx-hw, cy); ctx.lineTo(cx+hw, cy); ctx.lineTo(cx+hw, cy-h); }
+  if (dir === 'S') { ctx.moveTo(cx-hw, cy+h); ctx.lineTo(cx-hw, cy); ctx.lineTo(cx+hw, cy); ctx.lineTo(cx+hw, cy+h); }
+  if (dir === 'E') { ctx.moveTo(cx+h, cy-hw); ctx.lineTo(cx, cy-hw); ctx.lineTo(cx, cy+hw); ctx.lineTo(cx+h, cy+hw); }
+  if (dir === 'W') { ctx.moveTo(cx-h, cy-hw); ctx.lineTo(cx, cy-hw); ctx.lineTo(cx, cy+hw); ctx.lineTo(cx-h, cy+hw); }
+  ctx.stroke();
+}
+
+// ── Tile segments ─────────────────────────────────────
+
+function tileSegs(r, c) {
+  const x = px(c), y = py(r);
+  const d = [...(dirs[cellKey(r, c)] || [])].sort();
+  if (!d.length) return [];
+  if (d.length === 1) return [{ dead: d[0] }];
+
+  const segs = [];
+  if (d.length === 2) {
+    const a = portXY(r, c, d[0]), b = portXY(r, c, d[1]);
+    const opp = (d[0]==='E' && d[1]==='W') || (d[0]==='N' && d[1]==='S');
+    segs.push(opp ? { L: [a[0],a[1],b[0],b[1]] } : { C: [a[0],a[1],x,y,b[0],b[1]] });
+    return segs;
+  }
+
+  // 3 or 4 directions: draw through-lines for opposite pairs, curves for remainder
+  const has = dd => d.includes(dd), drawn = new Set();
+  if (has('N') && has('S')) {
+    segs.push({ L: [portXY(r,c,'N')[0], portXY(r,c,'N')[1], portXY(r,c,'S')[0], portXY(r,c,'S')[1]] });
+    drawn.add('N'); drawn.add('S');
+  }
+  if (has('E') && has('W')) {
+    segs.push({ L: [portXY(r,c,'E')[0], portXY(r,c,'E')[1], portXY(r,c,'W')[0], portXY(r,c,'W')[1]] });
+    drawn.add('E'); drawn.add('W');
+  }
+  const rest = d.filter(dd => !drawn.has(dd));
+  if (rest.length >= 2) {
+    const a = portXY(r,c,rest[0]), b = portXY(r,c,rest[1]);
+    segs.push({ C: [a[0],a[1],x,y,b[0],b[1]] });
+  } else {
+    for (const dd of rest) {
+      const p = portXY(r, c, dd);
+      segs.push({ L: [x, y, p[0], p[1]] });
+    }
+  }
+  return segs;
+}
+
+function strokeSeg(seg, color, width) {
+  ctx.lineCap = 'butt'; ctx.lineJoin = 'round'; ctx.strokeStyle = color; ctx.lineWidth = width;
+  ctx.beginPath();
+  if (seg.L) { ctx.moveTo(seg.L[0], seg.L[1]); ctx.lineTo(seg.L[2], seg.L[3]); }
+  else if (seg.C) { ctx.moveTo(seg.C[0], seg.C[1]); ctx.quadraticCurveTo(seg.C[2], seg.C[3], seg.C[4], seg.C[5]); }
+  ctx.stroke();
+}
+
+// ── Main render ───────────────────────────────────────
+
+function render(now) {
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Advance surgery reveal (node-level: V and H channels reveal independently)
+  if (surgeryQueue.length > 0 && surgeryRevealIdx < surgeryQueue.length) {
+    const elapsed = (now - surgeryStartTime) / 1000;
+    const speed = Math.max(8, surgeryQueue.length / 2.5);
+    surgeryRevealIdx = Math.min(surgeryQueue.length, Math.floor(elapsed * speed));
+  }
+  // Set of unrevealed NODES (not cells)
+  const unrevealedNodes = new Set();
+  for (let i = surgeryRevealIdx; i < surgeryQueue.length; i++)
+    unrevealedNodes.add(surgeryQueue[i]);
+
+  // Helper: is a cell fully unrevealed? (all its nodes unrevealed)
+  const isCellUnrevealed = (ck) => {
+    if (crossingCells.has(ck)) {
+      return unrevealedNodes.has(ck + 'V') && unrevealedNodes.has(ck + 'H');
+    }
+    return unrevealedNodes.has(ck);
+  };
+
+  // Helper: is a specific channel unrevealed at a crossing?
+  const isChannelUnrevealed = (ck, ch) => {
+    return unrevealedNodes.has(ck + ch);
+  };
+
+  // Classify cells — only full crossings (all 4 dirs) get special rendering.
+  // Everything else is a standard tile.
+  const normalCells = [], deadEnds = [], crossCells = [];
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const ck = cellKey(r, c);
+      if (isCellUnrevealed(ck)) continue;
+      const d = dirs[ck];
+      if (!d || d.size === 0) continue;
+
+      if (crossingType[ck]) {
+        // Full crossing: per-channel rendering with wipe
+        // Each channel might be independently unrevealed
+        const vRevealed = !isChannelUnrevealed(ck, 'V');
+        const hRevealed = !isChannelUnrevealed(ck, 'H');
+        crossCells.push({ r, c, type: crossingType[ck],
+          vColor: vRevealed ? channelColor(r, c, 'V') : null,
+          hColor: hRevealed ? channelColor(r, c, 'H') : null });
+      } else {
+        // Normal cell — skip if its node is unrevealed
+        if (unrevealedNodes.has(crossingCells.has(ck) ? ck + 'V' : ck) &&
+            unrevealedNodes.has(crossingCells.has(ck) ? ck + 'H' : ck)) continue;
+        const color = cellColor(r, c);
+        const segs = tileSegs(r, c);
+        if (segs.length === 1 && segs[0].dead) {
+          deadEnds.push({ r, c, dir: segs[0].dead, color });
+        } else if (segs.length > 0) {
+          normalCells.push({ r, c, segs, color });
+        }
+      }
+    }
+  }
+
+  // Pass 1+2: Non-crossing cells (outer + inner)
+  for (const cell of normalCells)
+    for (const seg of cell.segs) strokeSeg(seg, cell.color, totalW);
+  for (const cell of normalCells)
+    for (const seg of cell.segs) strokeSeg(seg, BG, gap);
+
+  // Pass 3: Dead end caps
+  for (const de of deadEnds) drawDeadEnd(de.r, de.c, de.dir, de.color);
+
+  // Pass 4: Full crossings — channels reveal independently
+  for (const cc of crossCells) {
+    const x = px(cc.c), y = py(cc.r), h = CELL / 2;
+    const overCh = cc.type === 'VH' ? 'V' : 'H';
+    const underColor = overCh === 'V' ? cc.hColor : cc.vColor;
+    const overColor = overCh === 'V' ? cc.vColor : cc.hColor;
+    const hasUnder = underColor !== null;
+    const hasOver = overColor !== null;
+
+    if (!hasUnder && !hasOver) continue;
+
+    // Under-channel
+    const ua = overCh === 'V' ? [x+h, y] : [x, y-h];
+    const ub = overCh === 'V' ? [x-h, y] : [x, y+h];
+    if (hasUnder) {
+      strokeLine(ua[0], ua[1], ub[0], ub[1], underColor, totalW);
+      strokeLine(ua[0], ua[1], ub[0], ub[1], BG, gap);
+    }
+
+    // Wipe + stubs only if both channels visible
+    if (hasUnder && hasOver) {
+      if (overCh === 'V') strokeLine(x, y-h, x, y+h, BG, wipeW);
+      else strokeLine(x-h, y, x+h, y, BG, wipeW);
+
+      const sf = 0.35;
+      strokeLine(ua[0], ua[1], ua[0]+(x-ua[0])*sf, ua[1]+(y-ua[1])*sf, underColor, totalW);
+      strokeLine(ua[0], ua[1], ua[0]+(x-ua[0])*sf, ua[1]+(y-ua[1])*sf, BG, gap);
+      strokeLine(ub[0], ub[1], ub[0]+(x-ub[0])*sf, ub[1]+(y-ub[1])*sf, underColor, totalW);
+      strokeLine(ub[0], ub[1], ub[0]+(x-ub[0])*sf, ub[1]+(y-ub[1])*sf, BG, gap);
+    }
+
+    // Over-channel
+    const oa = overCh === 'V' ? [x, y-h] : [x+h, y];
+    const ob = overCh === 'V' ? [x, y+h] : [x-h, y];
+    if (hasOver) {
+      strokeLine(oa[0], oa[1], ob[0], ob[1], overColor, totalW);
+      strokeLine(oa[0], oa[1], ob[0], ob[1], BG, gap);
+    }
+  }
+
+  // Pass 5: Solution pulse
+  const t = (now - animStart) / 1000;
+  if (t > 2 && solutionPath.length > 1) {
+    ctx.globalCompositeOperation = 'lighter';
+    const len = solutionPath.length;
+    const raw = ((t - 2) * 6) % (len * 2);
+    const pos = raw < len ? raw : len * 2 - raw;
+    const pw = Math.max(5, len * 0.05);
+    for (let i = 0; i < len; i++) {
+      const dist = Math.abs(i - pos);
+      if (dist > pw) continue;
+      ctx.globalAlpha = Math.pow(1 - dist / pw, 3) * 0.3;
+      const [r, c] = solutionPath[i].split(',').map(Number);
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(px(c), py(r), gap * 0.35, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ── Utility ───────────────────────────────────────────
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// ── Surgery + animation ──────────────────────────────
+
+let animStart, lastSurgery;
+
+function verifyTree() {
+  // Check: edges should form a tree (|edges| === |nodes| - 1, connected)
+  const nodes = allExpandedNodes();
+  if (edges.size !== nodes.length - 1) {
+    console.warn(`Tree invariant broken: ${edges.size} edges, ${nodes.length} nodes (expected ${nodes.length - 1})`);
+  }
+}
+
+function recompute() {
+  classifyCells();
+  computeDepth();
+  computeSolution();
+  verifyTree();
+}
+
+function doSurgery(now) {
+  // Pick a random expanded graph node (not the root)
+  const nodes = allExpandedNodes().filter(n => parentMap[n] !== null);
+  if (!nodes.length) return;
+  const target = nodes[Math.floor(Math.random() * nodes.length)];
+
+  // Get the actual subtree nodes BEFORE regrowing (regrow changes parentMap)
+  const subNodes = getSubtreeNodes(target);
+  const affectedCells = regrowSubtree(target);
+  if (affectedCells.size <= 1) return;
+
+  // Assign new generation to affected NODES (not cells)
+  // This means V and H channels of a crossing get independent colors
+  generation++;
+  for (const nk of subNodes) nodeGen[nk] = generation;
+
+  // Build DFS-ordered reveal queue at NODE level (V and H reveal independently)
+  recompute();
+  const adj = buildExpandedAdj();
+  surgeryQueue = [];
+  const visited = new Set();
+  const stack = [target];
+  while (stack.length) {
+    const n = stack.pop();
+    if (visited.has(n) || !subNodes.has(n)) continue;
+    visited.add(n);
+    surgeryQueue.push(n);
+    const nbs = (adj[n] || []).filter(nb => !visited.has(nb) && subNodes.has(nb));
+    shuffle(nbs);
+    for (const nb of nbs) stack.push(nb);
+  }
+  surgeryRevealIdx = 0;
+  surgeryStartTime = now;
+}
+
+function startNew() {
+  setup();
+  genMaze();
+  buildParentMap();
+  generation = 0;
+  nodeGen = {};
+  for (const nk of allExpandedNodes()) nodeGen[nk] = 0;
+  surgeryQueue = [];
+  surgeryRevealIdx = 0;
+  recompute();
+  animStart = performance.now();
+  lastSurgery = animStart;
+}
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const t = (now - animStart) / 1000;
+
+  const animDone = surgeryRevealIdx >= surgeryQueue.length;
+  if (now - lastSurgery > SURGERY_INTERVAL && t > 3 && animDone) {
+    doSurgery(now);
+    lastSurgery = now;
+  }
+
+  if (t < 2) {
+    render(now);
+    ctx.fillStyle = BG; ctx.globalAlpha = Math.max(0, 1 - t / 2);
+    ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.globalAlpha = 1;
+  } else {
+    render(now);
+  }
+}
+
+window.addEventListener('resize', startNew);
+canvas.addEventListener('click', startNew);
+document.addEventListener('keydown', e => {
+  if (e.key === ' ') startNew();
+  if (e.key === 'Escape') document.body.style.cursor = 'default';
+});
+
+startNew();
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>

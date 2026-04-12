@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Maze Tree Surgery</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+  h1 { font-size: 1.4em; margin-bottom: 4px; color: #e8d4a0; }
+  .subtitle { font-size: 0.85em; color: #888; margin-bottom: 16px; }
+  canvas {
+    border: 1px solid #333;
+    cursor: crosshair;
+    background: #0f0f23;
+  }
+  .controls {
+    margin-top: 12px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  button {
+    background: #2a2a4a;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    padding: 6px 14px;
+    font-family: inherit;
+    font-size: 0.85em;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  button:hover { background: #3a3a5a; }
+  select {
+    background: #2a2a4a;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    padding: 5px 8px;
+    font-family: inherit;
+    font-size: 0.85em;
+    border-radius: 3px;
+  }
+  .info {
+    margin-top: 10px;
+    font-size: 0.8em;
+    color: #888;
+    text-align: center;
+    max-width: 600px;
+  }
+  .stats {
+    margin-top: 8px;
+    font-size: 0.8em;
+    color: #aaa;
+  }
+</style>
+</head>
+<body>
+<h1>Maze Tree Surgery</h1>
+<div class="subtitle">Click a cell to regrow its subtree</div>
+<canvas id="c" width="640" height="640"></canvas>
+<div class="controls">
+  <button id="btnNew">New maze</button>
+  <select id="selAlgo">
+    <option value="dfs">DFS</option>
+    <option value="wilson" selected>Wilson</option>
+    <option value="kruskal">Kruskal</option>
+    <option value="prim">Prim</option>
+  </select>
+  <label style="font-size:0.85em">
+    <input type="checkbox" id="chkTree"> Show tree
+  </label>
+  <label style="font-size:0.85em">
+    <input type="checkbox" id="chkSolution" checked> Solution
+  </label>
+</div>
+<div class="stats" id="stats"></div>
+<div class="info">
+  Click any cell to select a node in the spanning tree.
+  The subtree rooted at that node (toward leaves, away from entry) is
+  erased and regrown randomly. The maze remains a perfect maze.
+</div>
+
+<script>
+const ROWS = 16, COLS = 16;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const CELL = canvas.width / COLS;
+
+// --- Maze data structure ---
+// edges: Set of "r1,c1-r2,c2" strings (canonical: smaller first)
+let edges = new Set();
+let parentMap = {};   // cell -> parent cell (rooted at entry)
+let subtreeCache = {};
+
+function edgeKey(r1, c1, r2, c2) {
+  if (r1 < r2 || (r1 === r2 && c1 < c2))
+    return `${r1},${c1}-${r2},${c2}`;
+  return `${r2},${c2}-${r1},${c1}`;
+}
+
+function hasPassage(r1, c1, r2, c2) {
+  return edges.has(edgeKey(r1, c1, r2, c2));
+}
+
+function gridNeighbors(r, c) {
+  const nb = [];
+  if (r > 0) nb.push([r-1, c]);
+  if (r < ROWS-1) nb.push([r+1, c]);
+  if (c > 0) nb.push([r, c-1]);
+  if (c < COLS-1) nb.push([r, c+1]);
+  return nb;
+}
+
+// --- Generation algorithms ---
+
+function genDFS() {
+  edges = new Set();
+  const visited = new Set();
+  visited.add('0,0');
+  const stack = [[0, 0]];
+  while (stack.length) {
+    const [r, c] = stack[stack.length - 1];
+    const nbs = gridNeighbors(r, c).filter(([nr, nc]) => !visited.has(`${nr},${nc}`));
+    if (nbs.length) {
+      const [nr, nc] = nbs[Math.floor(Math.random() * nbs.length)];
+      edges.add(edgeKey(r, c, nr, nc));
+      visited.add(`${nr},${nc}`);
+      stack.push([nr, nc]);
+    } else {
+      stack.pop();
+    }
+  }
+}
+
+function genKruskal() {
+  edges = new Set();
+  const allEdges = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      if (c + 1 < COLS) allEdges.push([r, c, r, c+1]);
+      if (r + 1 < ROWS) allEdges.push([r, c, r+1, c]);
+    }
+  // Shuffle
+  for (let i = allEdges.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [allEdges[i], allEdges[j]] = [allEdges[j], allEdges[i]];
+  }
+  // Union-Find
+  const parent = {}, rank = {};
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      const k = `${r},${c}`;
+      parent[k] = k;
+      rank[k] = 0;
+    }
+  function find(x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) {
+    let ra = find(a), rb = find(b);
+    if (ra === rb) return false;
+    if (rank[ra] < rank[rb]) [ra, rb] = [rb, ra];
+    parent[rb] = ra;
+    if (rank[ra] === rank[rb]) rank[ra]++;
+    return true;
+  }
+  for (const [r1, c1, r2, c2] of allEdges) {
+    if (union(`${r1},${c1}`, `${r2},${c2}`))
+      edges.add(edgeKey(r1, c1, r2, c2));
+  }
+}
+
+function genWilson() {
+  edges = new Set();
+  const inTree = new Set();
+  inTree.add('0,0');
+
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++) {
+      if (inTree.has(`${r},${c}`)) continue;
+      // Loop-erased random walk
+      const path = [[r, c]];
+      const pos = { [`${r},${c}`]: 0 };
+      let [cr, cc] = [r, c];
+      while (!inTree.has(`${cr},${cc}`)) {
+        const nbs = gridNeighbors(cr, cc);
+        const [nr, nc] = nbs[Math.floor(Math.random() * nbs.length)];
+        const nk = `${nr},${nc}`;
+        if (nk in pos) {
+          const idx = pos[nk];
+          for (let j = idx + 1; j < path.length; j++)
+            delete pos[`${path[j][0]},${path[j][1]}`];
+          path.length = idx + 1;
+          [cr, cc] = [nr, nc];
+        } else {
+          path.push([nr, nc]);
+          pos[nk] = path.length - 1;
+          [cr, cc] = [nr, nc];
+        }
+      }
+      for (let i = 0; i < path.length - 1; i++) {
+        edges.add(edgeKey(path[i][0], path[i][1], path[i+1][0], path[i+1][1]));
+        inTree.add(`${path[i][0]},${path[i][1]}`);
+      }
+      if (path.length) inTree.add(`${path[path.length-1][0]},${path[path.length-1][1]}`);
+    }
+}
+
+function genPrim() {
+  edges = new Set();
+  const inMaze = new Set();
+  inMaze.add('0,0');
+  const frontier = [];
+  for (const [nr, nc] of gridNeighbors(0, 0))
+    frontier.push([0, 0, nr, nc]);
+
+  while (frontier.length) {
+    const idx = Math.floor(Math.random() * frontier.length);
+    [frontier[idx], frontier[frontier.length-1]] = [frontier[frontier.length-1], frontier[idx]];
+    const [r1, c1, r2, c2] = frontier.pop();
+    if (inMaze.has(`${r2},${c2}`)) continue;
+    edges.add(edgeKey(r1, c1, r2, c2));
+    inMaze.add(`${r2},${c2}`);
+    for (const [nr, nc] of gridNeighbors(r2, c2))
+      if (!inMaze.has(`${nr},${nc}`))
+        frontier.push([r2, c2, nr, nc]);
+  }
+}
+
+// --- Tree rooting and subtree operations ---
+
+function buildParentMap() {
+  // BFS from entry (0,0) to build parent pointers
+  parentMap = {};
+  const adj = {};
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      adj[`${r},${c}`] = [];
+
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    adj[a].push(b);
+    adj[b].push(a);
+  }
+
+  parentMap['0,0'] = null;
+  const queue = ['0,0'];
+  const visited = new Set(['0,0']);
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++];
+    for (const nb of adj[node]) {
+      if (!visited.has(nb)) {
+        visited.add(nb);
+        parentMap[nb] = node;
+        queue.push(nb);
+      }
+    }
+  }
+}
+
+function getSubtreeVertices(cellKey) {
+  // All descendants of cellKey (inclusive) in the rooted tree
+  const adj = {};
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      adj[`${r},${c}`] = [];
+
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    adj[a].push(b);
+    adj[b].push(a);
+  }
+
+  const subtree = new Set([cellKey]);
+  const stack = [cellKey];
+  while (stack.length) {
+    const node = stack.pop();
+    for (const nb of adj[node]) {
+      if (!subtree.has(nb) && parentMap[nb] === node) {
+        subtree.add(nb);
+        stack.push(nb);
+      }
+    }
+  }
+  return subtree;
+}
+
+function regrowSubtree(cellKey) {
+  const subtreeVerts = getSubtreeVertices(cellKey);
+  if (subtreeVerts.size <= 1) return; // leaf, nothing to regrow
+
+  // Remove all edges internal to the subtree
+  const toRemove = [];
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    // Remove if both endpoints in subtree, but keep the edge connecting cellKey to its parent
+    if (subtreeVerts.has(a) && subtreeVerts.has(b)) {
+      toRemove.push(ek);
+    }
+  }
+  for (const ek of toRemove) edges.delete(ek);
+
+  // Build the grid subgraph induced by subtreeVerts
+  const verts = [...subtreeVerts];
+  const vertSet = new Set(verts);
+
+  // Generate a random spanning tree of this subgraph using Wilson's algorithm
+  const inTree = new Set([cellKey]);
+
+  for (const start of verts) {
+    if (inTree.has(start)) continue;
+    const [sr, sc] = start.split(',').map(Number);
+    const path = [start];
+    const pos = { [start]: 0 };
+    let cur = start;
+
+    while (!inTree.has(cur)) {
+      const [cr, cc] = cur.split(',').map(Number);
+      const nbs = gridNeighbors(cr, cc)
+        .map(([nr, nc]) => `${nr},${nc}`)
+        .filter(k => vertSet.has(k));
+      const nxt = nbs[Math.floor(Math.random() * nbs.length)];
+      if (nxt in pos) {
+        const idx = pos[nxt];
+        for (let j = idx + 1; j < path.length; j++) delete pos[path[j]];
+        path.length = idx + 1;
+        cur = nxt;
+      } else {
+        path.push(nxt);
+        pos[nxt] = path.length - 1;
+        cur = nxt;
+      }
+    }
+    for (let i = 0; i < path.length - 1; i++) {
+      const [r1, c1] = path[i].split(',').map(Number);
+      const [r2, c2] = path[i+1].split(',').map(Number);
+      edges.add(edgeKey(r1, c1, r2, c2));
+      inTree.add(path[i]);
+    }
+    if (path.length) inTree.add(path[path.length - 1]);
+  }
+
+  buildParentMap();
+}
+
+// --- Solution path ---
+
+function solveMaze() {
+  const adj = {};
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      adj[`${r},${c}`] = [];
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    adj[a].push(b);
+    adj[b].push(a);
+  }
+  const start = '0,0', end = `${ROWS-1},${COLS-1}`;
+  const parent = { [start]: null };
+  const queue = [start];
+  let head = 0;
+  while (head < queue.length) {
+    const node = queue[head++];
+    if (node === end) {
+      const path = [];
+      let cur = end;
+      while (cur) { path.push(cur); cur = parent[cur]; }
+      return path.reverse();
+    }
+    for (const nb of adj[node])
+      if (!(nb in parent)) { parent[nb] = node; queue.push(nb); }
+  }
+  return [];
+}
+
+// --- Rendering ---
+
+let highlightedSubtree = null;
+let hoveredCell = null;
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const showTree = document.getElementById('chkTree').checked;
+  const showSolution = document.getElementById('chkSolution').checked;
+
+  // Highlight subtree cells
+  if (highlightedSubtree) {
+    for (const vk of highlightedSubtree) {
+      const [r, c] = vk.split(',').map(Number);
+      ctx.fillStyle = 'rgba(80, 140, 220, 0.12)';
+      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+
+  // Hover highlight
+  if (hoveredCell) {
+    const [r, c] = hoveredCell.split(',').map(Number);
+    ctx.fillStyle = 'rgba(232, 212, 160, 0.15)';
+    ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+  }
+
+  // Tree edges
+  if (showTree) {
+    ctx.strokeStyle = 'rgba(80, 140, 220, 0.25)';
+    ctx.lineWidth = CELL * 0.45;
+    ctx.lineCap = 'round';
+    for (const ek of edges) {
+      const [a, b] = ek.split('-');
+      const [r1, c1] = a.split(',').map(Number);
+      const [r2, c2] = b.split(',').map(Number);
+      ctx.beginPath();
+      ctx.moveTo((c1 + 0.5) * CELL, (r1 + 0.5) * CELL);
+      ctx.lineTo((c2 + 0.5) * CELL, (r2 + 0.5) * CELL);
+      ctx.stroke();
+    }
+  }
+
+  // Solution path
+  if (showSolution) {
+    const path = solveMaze();
+    if (path.length > 1) {
+      ctx.strokeStyle = 'rgba(220, 80, 80, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      const [r0, c0] = path[0].split(',').map(Number);
+      ctx.moveTo((c0 + 0.5) * CELL, (r0 + 0.5) * CELL);
+      for (let i = 1; i < path.length; i++) {
+        const [r, c] = path[i].split(',').map(Number);
+        ctx.lineTo((c + 0.5) * CELL, (r + 0.5) * CELL);
+      }
+      ctx.stroke();
+    }
+  }
+
+  // Walls
+  ctx.strokeStyle = '#c0c0c0';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+
+  // Outer border (with entry/exit gaps)
+  ctx.beginPath();
+  // Top
+  ctx.moveTo(0, 0); ctx.lineTo(canvas.width, 0);
+  // Bottom
+  ctx.moveTo(0, canvas.height); ctx.lineTo(canvas.width, canvas.height);
+  // Left (gap at row 0)
+  ctx.moveTo(0, CELL); ctx.lineTo(0, canvas.height);
+  // Right (gap at last row)
+  ctx.moveTo(canvas.width, 0); ctx.lineTo(canvas.width, (ROWS - 1) * CELL);
+  ctx.stroke();
+
+  // Internal walls
+  ctx.beginPath();
+  // Horizontal walls
+  for (let r = 0; r < ROWS - 1; r++)
+    for (let c = 0; c < COLS; c++)
+      if (!hasPassage(r, c, r + 1, c)) {
+        ctx.moveTo(c * CELL, (r + 1) * CELL);
+        ctx.lineTo((c + 1) * CELL, (r + 1) * CELL);
+      }
+  // Vertical walls
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS - 1; c++)
+      if (!hasPassage(r, c, r, c + 1)) {
+        ctx.moveTo((c + 1) * CELL, r * CELL);
+        ctx.lineTo((c + 1) * CELL, (r + 1) * CELL);
+      }
+  ctx.stroke();
+
+  // Entry/exit arrows
+  ctx.strokeStyle = '#d44';
+  ctx.fillStyle = '#d44';
+  ctx.lineWidth = 2;
+  drawArrow(-8, 0.5 * CELL, 6, 0.5 * CELL);
+  drawArrow(canvas.width - 6, (ROWS - 0.5) * CELL, canvas.width + 8, (ROWS - 0.5) * CELL);
+
+  // Tree node dots at junctions
+  if (showTree) {
+    const deg = {};
+    for (const ek of edges) {
+      const [a, b] = ek.split('-');
+      deg[a] = (deg[a] || 0) + 1;
+      deg[b] = (deg[b] || 0) + 1;
+    }
+    for (const [k, d] of Object.entries(deg)) {
+      if (d >= 3) {
+        const [r, c] = k.split(',').map(Number);
+        ctx.fillStyle = 'rgba(80, 140, 220, 0.5)';
+        ctx.beginPath();
+        ctx.arc((c + 0.5) * CELL, (r + 0.5) * CELL, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  updateStats();
+}
+
+function drawArrow(x1, y1, x2, y2) {
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - 6 * Math.cos(angle - 0.4), y2 - 6 * Math.sin(angle - 0.4));
+  ctx.lineTo(x2 - 6 * Math.cos(angle + 0.4), y2 - 6 * Math.sin(angle + 0.4));
+  ctx.closePath();
+  ctx.fill();
+}
+
+function updateStats() {
+  const deg = {};
+  for (const ek of edges) {
+    const [a, b] = ek.split('-');
+    deg[a] = (deg[a] || 0) + 1;
+    deg[b] = (deg[b] || 0) + 1;
+  }
+  const dist = {};
+  for (const d of Object.values(deg))
+    dist[d] = (dist[d] || 0) + 1;
+  const leaves = dist[1] || 0;
+  const junctions = Object.entries(dist)
+    .filter(([k]) => parseInt(k) >= 3)
+    .reduce((s, [, v]) => s + v, 0);
+  const path = solveMaze();
+  const solLen = path.length - 1;
+  const shortest = ROWS + COLS - 2;
+  const tort = (solLen / shortest).toFixed(2);
+  const degStr = Object.entries(dist).sort(([a],[b]) => a - b)
+    .map(([k, v]) => `d=${k}: ${v}`).join(', ');
+
+  document.getElementById('stats').textContent =
+    `Leaves: ${leaves}  Junctions: ${junctions}  Solution: ${solLen} steps  Tortuosity: ${tort}  |  ${degStr}`;
+}
+
+// --- Interaction ---
+
+canvas.addEventListener('mousemove', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const c = Math.floor((e.clientX - rect.left) / CELL);
+  const r = Math.floor((e.clientY - rect.top) / CELL);
+  if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+    const key = `${r},${c}`;
+    if (hoveredCell !== key) {
+      hoveredCell = key;
+      highlightedSubtree = getSubtreeVertices(key);
+      draw();
+    }
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  hoveredCell = null;
+  highlightedSubtree = null;
+  draw();
+});
+
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const c = Math.floor((e.clientX - rect.left) / CELL);
+  const r = Math.floor((e.clientY - rect.top) / CELL);
+  if (r >= 0 && r < ROWS && c >= 0 && c < COLS) {
+    const key = `${r},${c}`;
+    regrowSubtree(key);
+    highlightedSubtree = getSubtreeVertices(key);
+    draw();
+  }
+});
+
+document.getElementById('btnNew').addEventListener('click', () => {
+  generate();
+  draw();
+});
+
+document.getElementById('chkTree').addEventListener('change', draw);
+document.getElementById('chkSolution').addEventListener('change', draw);
+document.getElementById('selAlgo').addEventListener('change', () => {
+  generate();
+  draw();
+});
+
+function generate() {
+  const algo = document.getElementById('selAlgo').value;
+  if (algo === 'dfs') genDFS();
+  else if (algo === 'kruskal') genKruskal();
+  else if (algo === 'wilson') genWilson();
+  else if (algo === 'prim') genPrim();
+  buildParentMap();
+  highlightedSubtree = null;
+  hoveredCell = null;
+}
+
+// --- Init ---
+generate();
+draw();
+</script>
+</body>
+</html>
