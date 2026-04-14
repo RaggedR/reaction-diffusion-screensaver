@@ -371,6 +371,10 @@ if __name__ == "__main__":
                         help="Extra edge density 0.0-1.0 (default: 0.0)")
     parser.add_argument("-f", "--fill", type=float, default=0.0,
                         help="Dead-end fill fraction 0.0-1.0 (default: 0.0)")
+    parser.add_argument("--jpeg", action="store_true",
+                        help="Also convert to JPEG (requires pdftoppm)")
+    parser.add_argument("--dpi", type=int, default=300,
+                        help="DPI for JPEG output (default: 300)")
     args = parser.parse_args()
 
     size = args.size
@@ -396,3 +400,16 @@ if __name__ == "__main__":
         print("pdflatex failed:")
         print(result.stdout[-2000:])
         sys.exit(1)
+
+    if args.jpeg:
+        jpeg_result = subprocess.run(
+            ["pdftoppm", "-jpeg", "-r", str(args.dpi), "-singlefile",
+             "kruskal.pdf", "kruskal"],
+            capture_output=True, text=True,
+        )
+        if jpeg_result.returncode == 0:
+            print(f"Converted to kruskal.jpg ({args.dpi} DPI)")
+        else:
+            print("pdftoppm failed:")
+            print(jpeg_result.stderr)
+            sys.exit(1)
