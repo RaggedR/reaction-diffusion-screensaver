@@ -14,6 +14,9 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         fluid: resolve(__dirname, 'fluid.html'),
+        mazeInteractive: resolve(__dirname, 'mazes/interactive.html'),
+        mazeKnotted: resolve(__dirname, 'mazes/knotted.html'),
+        mazeCeltic: resolve(__dirname, 'mazes/celtic.html'),
       }
     }
   }

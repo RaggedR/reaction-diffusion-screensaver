@@ -1,8 +1,8 @@
-# Music-Reactive Screen Savers
+# Music-Reactive Screen Savers & Mazes
 
-Two browser-based screen savers that respond to music through your microphone.
+Browser-based screen savers that respond to music, plus interactive maze generators.
 
-**[Try Reaction-Diffusion](https://raggedr.github.io/reaction-diffusion-screensaver/)** | **[Try Fluid Dynamics](https://raggedr.github.io/reaction-diffusion-screensaver/fluid.html)**
+**[Try Reaction-Diffusion](https://raggedr.github.io/reaction-diffusion-screensaver/)** | **[Try Fluid Dynamics](https://raggedr.github.io/reaction-diffusion-screensaver/fluid.html)** | **[Tree Surgery Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/interactive.html)** | **[Knotted Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/knotted.html)** | **[Celtic Knot Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/celtic.html)**
 
 ## Reaction-Diffusion
 
@@ -11,6 +11,20 @@ Two browser-based screen savers that respond to music through your microphone.
 ## Fluid Dynamics
 
 [Kelvin-Helmholtz](https://en.wikipedia.org/wiki/Kelvin%E2%80%93Helmholtz_instability) vortex patterns driven by 2D Navier-Stokes. Beats inject vortex dipoles at the shear boundaries, stirring the fluid and creating swirling jets. The physics naturally carries the energy outward — like a lava lamp that dances to music.
+
+## Mazes
+
+### Tree Surgery
+
+Interactive maze built with Kruskal's algorithm on an expanded graph. Click any cell to sever its subtree and regrow it — the maze restructures in real time. Supports DFS, Wilson's, Kruskal's, and Prim's algorithms.
+
+### Knotted Maze
+
+Fullscreen animated screen saver. Generates a knotted maze using Kruskal's on an expanded graph where some cells become crossings (two independent strands passing through). Periodically performs tree surgery — pruning and regrowing subtrees to keep the maze evolving.
+
+### Celtic Knot Maze
+
+Tile-based Celtic knot patterns generated from maze structure.
 
 ## Quick Start
 
@@ -21,12 +35,15 @@ npm run dev
 
 - **Reaction-Diffusion**: `http://localhost:5173`
 - **Fluid Dynamics**: `http://localhost:5173/fluid.html`
+- **Tree Surgery Maze**: `http://localhost:5173/mazes/interactive.html`
+- **Knotted Maze**: `http://localhost:5173/mazes/knotted.html`
+- **Celtic Knot Maze**: `http://localhost:5173/mazes/celtic.html`
 
-Click to start, then grant microphone access. The screen savers detect the tempo from bass energy and lock onto the beat.
+Click to start the screen savers, then grant microphone access. They detect the tempo from bass energy and lock onto the beat.
 
 ## No Microphone?
 
-Both modes run autonomously without a mic — patterns evolve but don't respond to beats.
+The screen savers run autonomously without a mic — patterns evolve but don't respond to beats. The maze modes don't use audio.
 
 ## Tech Stack
 
