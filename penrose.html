@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Penrose Tiling</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script>
+  (() => {
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    const A36 = Math.PI / 5;
+    const EDGE = 45;
+    const SHORT = EDGE;
+    const LONG = EDGE * PHI;
+    const SNAP_THRESH = 20;
+
+    // ─── Palette layout ──────────────────────────────────────
+
+    const PALETTE_W = 200;
+    const PALETTE_H = 110;
+    const KITE_WOOD = { base: '#b8935a', light: '#d4b07a', dark: '#8a6a3a', edge: '#6b4f2a' };
+    const DART_WOOD = { base: '#6b4c35', light: '#8a6950', dark: '#4a3020', edge: '#3d2518' };
+
+    const paletteDefs = [
+      { type: 'kite', dx: 55,  label: 'KITE' },
+      { type: 'dart', dx: 145, label: 'DART' },
+    ];
+
+    function getPaletteWorld() {
+      const h = window.innerHeight;
+      return paletteDefs.map(d => ({
+        type: d.type,
+        x: d.dx,
+        y: h - PALETTE_H + 15,
+        axis: Math.PI / 2,
+        label: d.label,
+      }));
+    }
+
+    // ─── Geometry ────────────────────────────────────────────
+
+    function addPt(a, b) { return [a[0] + b[0], a[1] + b[1]]; }
+
+    function makeKite(tip, axisAngle) {
+      const A = tip;
+      const B = addPt(A, [LONG * Math.cos(axisAngle + A36), LONG * Math.sin(axisAngle + A36)]);
+      const C = addPt(A, [LONG * Math.cos(axisAngle),        LONG * Math.sin(axisAngle)]);
+      const D = addPt(A, [LONG * Math.cos(axisAngle - A36), LONG * Math.sin(axisAngle - A36)]);
+      return { type: 'kite', verts: [A, B, C, D] };
+    }
+
+    function makeDart(tip, axisAngle) {
+      const A = tip;
+      const B = addPt(A, [LONG * Math.cos(axisAngle + A36), LONG * Math.sin(axisAngle + A36)]);
+      const C = addPt(A, [SHORT * Math.cos(axisAngle),       SHORT * Math.sin(axisAngle)]);
+      const D = addPt(A, [LONG * Math.cos(axisAngle - A36), LONG * Math.sin(axisAngle - A36)]);
+      return { type: 'dart', verts: [A, B, C, D] };
+    }
+
+    function makeTile(tile) {
+      const tip = [tile.x, tile.y];
+      return tile.type === 'kite' ? makeKite(tip, tile.axis) : makeDart(tip, tile.axis);
+    }
+
+    function worldVerts(tile) {
+      return makeTile(tile).verts;
+    }
+
+    function localVerts(tile) {
+      const t = tile.type === 'kite' ? makeKite([0, 0], tile.axis) : makeDart([0, 0], tile.axis);
+      return t.verts;
+    }
+
+    // ─── Point-in-polygon (ray casting) ──────────────────────
+
+    function pointInPolygon(px, py, verts) {
+      let inside = false;
+      for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+        const xi = verts[i][0], yi = verts[i][1];
+        const xj = verts[j][0], yj = verts[j][1];
+        if ((yi > py) !== (yj > py) &&
+            px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+
+    // ─── Reference tiling (subdivision) ─────────────────────
+
+    let referenceTiles = [];   // all tiles from subdivision { type, x, y, axis }
+    let revealedSet = new Set(); // indices into referenceTiles that are "placed"
+
+    function lerpPt(a, b, t) {
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+
+    function generateReference(cx, cy) {
+      const GR = 1 / PHI;
+      const DEPTH = 7;
+      const R = LONG * Math.pow(PHI, DEPTH);
+
+      // Initial sun: 5 kites = 10 half-kite triangles (5 TL + 5 TR)
+      let tris = [];
+      for (let i = 0; i < 5; i++) {
+        const axis = 2 * Math.PI * i / 5 - Math.PI / 2;
+        const A = [cx, cy];
+        const B = [cx + R * Math.cos(axis + A36), cy + R * Math.sin(axis + A36)];
+        const C = [cx + R * Math.cos(axis), cy + R * Math.sin(axis)];
+        const D = [cx + R * Math.cos(axis - A36), cy + R * Math.sin(axis - A36)];
+        tris.push(['TL', A, B, C]);
+        tris.push(['TR', A, D, C]);
+      }
+
+      // 4-type Robinson triangle subdivision
+      for (let d = 0; d < DEPTH; d++) {
+        const next = [];
+        for (const [type, v1, v2, v3] of tris) {
+          switch (type) {
+            case 'NL': {
+              const p = lerpPt(v1, v3, GR);
+              next.push(['NL', v2, v3, p]);
+              next.push(['TL', p, v1, v2]);
+              break;
+            }
+            case 'NR': {
+              const p = lerpPt(v1, v2, GR);
+              next.push(['NR', v3, p, v2]);
+              next.push(['TR', p, v3, v1]);
+              break;
+            }
+            case 'TL': {
+              const p1 = lerpPt(v3, v1, GR);
+              const p2 = lerpPt(v3, v2, GR);
+              next.push(['TR', p1, p2, v3]);
+              next.push(['NR', p2, p1, v1]);
+              next.push(['TL', p2, v1, v2]);
+              break;
+            }
+            case 'TR': {
+              const p1 = lerpPt(v2, v3, GR);
+              const p2 = lerpPt(v2, v1, GR);
+              next.push(['TR', p1, v3, v1]);
+              next.push(['NL', p1, v1, p2]);
+              next.push(['TL', p2, v2, p1]);
+              break;
+            }
+          }
+        }
+        tris = next;
+      }
+
+      // Clip to viewport with margin
+      const w = window.innerWidth, h = window.innerHeight;
+      const margin = LONG * 4;
+      tris = tris.filter(([, v1, v2, v3]) => {
+        const mx = (v1[0] + v2[0] + v3[0]) / 3;
+        const my = (v1[1] + v2[1] + v3[1]) / 3;
+        return mx > -margin && mx < w + margin && my > -margin && my < h + margin;
+      });
+
+      // Group half-tiles into full kites and darts
+      return groupTriangles(tris);
+    }
+
+    function vtxKey(p) {
+      return `${Math.round(p[0] * 4)},${Math.round(p[1] * 4)}`;
+    }
+
+    function groupTriangles(tris) {
+      // Build edge map: for each triangle edge, find all triangles that share it
+      const edgeMap = new Map();
+
+      for (let i = 0; i < tris.length; i++) {
+        const [, v1, v2, v3] = tris[i];
+        for (const [a, b] of [[v1, v2], [v2, v3], [v1, v3]]) {
+          const key = triEdgeKey(a, b);
+          if (!edgeMap.has(key)) edgeMap.set(key, []);
+          edgeMap.get(key).push(i);
+        }
+      }
+
+      const paired = new Set();
+      const tiles = [];
+
+      for (const [, indices] of edgeMap) {
+        if (indices.length !== 2) continue;
+        const [i, j] = indices;
+        if (paired.has(i) || paired.has(j)) continue;
+
+        const t1 = tris[i], t2 = tris[j];
+        const base1 = t1[0][0], base2 = t2[0][0]; // 'T' or 'N'
+        const side1 = t1[0][1], side2 = t2[0][1]; // 'L' or 'R'
+
+        if (base1 !== base2 || side1 === side2) continue;
+
+        paired.add(i);
+        paired.add(j);
+
+        const left = side1 === 'L' ? t1 : t2;
+        const right = side1 === 'L' ? t2 : t1;
+        const tileType = base1 === 'T' ? 'kite' : 'dart';
+
+        // Find 4 unique vertices from both triangles
+        const lv = [left[1], left[2], left[3]];
+        const rv = [right[1], right[2], right[3]];
+
+        // Find shared and unique vertices
+        const shared = [];
+        const sharedLi = new Set();
+        const sharedRi = new Set();
+
+        for (let li = 0; li < 3; li++) {
+          for (let ri = 0; ri < 3; ri++) {
+            if (sharedRi.has(ri)) continue;
+            if (Math.abs(lv[li][0] - rv[ri][0]) < 1 && Math.abs(lv[li][1] - rv[ri][1]) < 1) {
+              shared.push(lv[li]);
+              sharedLi.add(li);
+              sharedRi.add(ri);
+              break;
+            }
+          }
+        }
+
+        if (shared.length !== 2) continue;
+
+        let uL = null, uR = null;
+        for (let li = 0; li < 3; li++) if (!sharedLi.has(li)) uL = lv[li];
+        for (let ri = 0; ri < 3; ri++) if (!sharedRi.has(ri)) uR = rv[ri];
+        if (!uL || !uR) continue;
+
+        // Determine tip (A) vs base (C): tip has two LONG edges to uL and uR
+        const s0 = shared[0], s1 = shared[1];
+        const d0L = Math.hypot(s0[0] - uL[0], s0[1] - uL[1]);
+        const d0R = Math.hypot(s0[0] - uR[0], s0[1] - uR[1]);
+        const d1L = Math.hypot(s1[0] - uL[0], s1[1] - uL[1]);
+        const d1R = Math.hypot(s1[0] - uR[0], s1[1] - uR[1]);
+
+        // Tip is the shared vertex with two LONG edges to the unique vertices
+        const tol = LONG * 0.15;
+        let tip, base;
+        if (Math.abs(d0L - LONG) < tol && Math.abs(d0R - LONG) < tol) {
+          tip = s0; base = s1;
+        } else if (Math.abs(d1L - LONG) < tol && Math.abs(d1R - LONG) < tol) {
+          tip = s1; base = s0;
+        } else {
+          // Fallback: use the vertex with longer total distance to unique verts
+          tip = (d0L + d0R > d1L + d1R) ? s0 : s1;
+          base = (tip === s0) ? s1 : s0;
+        }
+
+        const axisAngle = Math.atan2(base[1] - tip[1], base[0] - tip[0]);
+
+        tiles.push({
+          type: tileType,
+          x: tip[0],
+          y: tip[1],
+          axis: axisAngle,
+        });
+      }
+
+      return tiles;
+    }
+
+    function triEdgeKey(p1, p2) {
+      const a = `${Math.round(p1[0] * 4)},${Math.round(p1[1] * 4)}`;
+      const b = `${Math.round(p2[0] * 4)},${Math.round(p2[1] * 4)}`;
+      return a < b ? a + '|' + b : b + '|' + a;
+    }
+
+    // ─── State ───────────────────────────────────────────────
+
+    let placedTiles = [];
+    let dragging = null;
+    let selectedIdx = -1;
+
+    // ─── Snap ────────────────────────────────────────────────
+
+    function findSnap(dragTile) {
+      const local = localVerts(dragTile);
+      let bestDist = SNAP_THRESH;
+      let bestTip = null;
+
+      for (const p of placedTiles) {
+        const pv = worldVerts(p);
+        for (let i = 0; i < 4; i++) {
+          const wx = dragTile.x + local[i][0];
+          const wy = dragTile.y + local[i][1];
+          for (let j = 0; j < 4; j++) {
+            const dx = wx - pv[j][0];
+            const dy = wy - pv[j][1];
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestTip = [pv[j][0] - local[i][0], pv[j][1] - local[i][1]];
+            }
+          }
+        }
+      }
+      return bestTip;
+    }
+
+    // ─── Valid placement from reference ─────────────────────
+
+    let validPlacements = [];
+
+    function edgeKey(p1, p2) {
+      const a = `${Math.round(p1[0] * 2)},${Math.round(p1[1] * 2)}`;
+      const b = `${Math.round(p2[0] * 2)},${Math.round(p2[1] * 2)}`;
+      return a < b ? a + '|' + b : b + '|' + a;
+    }
+
+    function recomputePlacements() {
+      if (placedTiles.length === 0) { validPlacements = []; return; }
+
+      // Build set of placed tile keys for fast lookup
+      const placedKeys = new Set();
+      for (const t of placedTiles) {
+        placedKeys.add(refTileKey(t));
+      }
+
+      // Build edge set of placed tiles
+      const placedEdges = new Set();
+      for (const t of placedTiles) {
+        const v = worldVerts(t);
+        for (let i = 0; i < 4; i++) {
+          placedEdges.add(edgeKey(v[i], v[(i + 1) % 4]));
+        }
+      }
+
+      // Find reference tiles that share an edge with placed tiles but aren't placed
+      const results = [];
+      for (let ri = 0; ri < referenceTiles.length; ri++) {
+        if (revealedSet.has(ri)) continue;
+        const ref = referenceTiles[ri];
+        const rv = worldVerts(ref);
+
+        // Check if this reference tile shares an edge with any placed tile
+        let adjacent = false;
+        for (let i = 0; i < 4; i++) {
+          if (placedEdges.has(edgeKey(rv[i], rv[(i + 1) % 4]))) {
+            adjacent = true;
+            break;
+          }
+        }
+        if (!adjacent) continue;
+
+        results.push({ ...ref, refIdx: ri, adjacentTiles: new Set([0]) });
+      }
+
+      validPlacements = results;
+    }
+
+    function refTileKey(tile) {
+      return `${Math.round(tile.x * 2)},${Math.round(tile.y * 2)},${Math.round(normAngle(tile.axis) * 100)}`;
+    }
+
+    function normAngle(a) {
+      return ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    }
+
+    function centroid(verts) {
+      let cx = 0, cy = 0;
+      for (const v of verts) { cx += v[0]; cy += v[1]; }
+      return [cx / verts.length, cy / verts.length];
+    }
+
+    function hitTest(mx, my) {
+      const h = window.innerHeight;
+      if (mx < PALETTE_W && my > h - PALETTE_H) {
+        const pw = getPaletteWorld();
+        for (let i = pw.length - 1; i >= 0; i--) {
+          if (pointInPolygon(mx, my, worldVerts(pw[i]))) return { kind: 'palette', idx: i };
+        }
+      }
+      for (let i = placedTiles.length - 1; i >= 0; i--) {
+        if (pointInPolygon(mx, my, worldVerts(placedTiles[i]))) return { kind: 'placed', idx: i };
+      }
+      for (let i = 0; i < validPlacements.length; i++) {
+        const vp = validPlacements[i];
+        if (pointInPolygon(mx, my, worldVerts(vp))) return { kind: 'ghost', idx: i };
+      }
+      return null;
+    }
+
+    // ─── Drawing ─────────────────────────────────────────────
+
+    function tilePath(verts) {
+      ctx.beginPath();
+      ctx.moveTo(verts[0][0], verts[0][1]);
+      for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
+      ctx.closePath();
+    }
+
+    function drawTileShape(verts, type, isActive, isGhost) {
+      const wood = type === 'kite' ? KITE_WOOD : DART_WOOD;
+      const [cx, cy] = centroid(verts);
+
+      if (isGhost) {
+        tilePath(verts);
+        ctx.fillStyle = type === 'kite' ? 'rgba(180, 140, 80, 0.12)' : 'rgba(100, 70, 50, 0.12)';
+        ctx.fill();
+        ctx.strokeStyle = type === 'kite' ? 'rgba(180, 140, 80, 0.35)' : 'rgba(120, 80, 55, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        return;
+      }
+
+      const grad = ctx.createLinearGradient(verts[0][0], verts[0][1], verts[2][0], verts[2][1]);
+      grad.addColorStop(0, wood.light);
+      grad.addColorStop(0.4, wood.base);
+      grad.addColorStop(0.8, wood.dark);
+      grad.addColorStop(1, wood.base);
+      tilePath(verts);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      const hx = cx * 0.6 + verts[0][0] * 0.4;
+      const hy = cy * 0.6 + verts[0][1] * 0.4;
+      const hr = LONG * 0.8;
+      const highlight = ctx.createRadialGradient(hx, hy, 0, cx, cy, hr);
+      highlight.addColorStop(0, 'rgba(255, 255, 255, 0.15)');
+      highlight.addColorStop(0.5, 'rgba(255, 255, 255, 0.03)');
+      highlight.addColorStop(1, 'rgba(0, 0, 0, 0.12)');
+      tilePath(verts);
+      ctx.fillStyle = highlight;
+      ctx.fill();
+
+      ctx.save();
+      tilePath(verts);
+      ctx.clip();
+      const grainDir = Math.atan2(verts[2][1] - verts[0][1], verts[2][0] - verts[0][0]);
+      const perpX = Math.cos(grainDir + Math.PI / 2);
+      const perpY = Math.sin(grainDir + Math.PI / 2);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.06)';
+      ctx.lineWidth = 0.5;
+      for (let k = -8; k <= 8; k++) {
+        const offset = k * 5.5 + ((cx * 3.7) % 5);
+        const ox = cx + perpX * offset;
+        const oy = cy + perpY * offset;
+        ctx.beginPath();
+        ctx.moveTo(ox - Math.cos(grainDir) * LONG, oy - Math.sin(grainDir) * LONG);
+        ctx.lineTo(ox + Math.cos(grainDir) * LONG, oy + Math.sin(grainDir) * LONG);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      tilePath(verts);
+      ctx.strokeStyle = isActive ? 'rgba(255, 220, 150, 0.7)' : wood.edge;
+      ctx.lineWidth = isActive ? 1.5 : 0.8;
+      ctx.stroke();
+    }
+
+    const RANDOM_BTN = { x: PALETTE_W + 20, w: 70, h: 28 };
+
+    function drawPalette() {
+      const h = window.innerHeight;
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+      ctx.fillRect(0, h - PALETTE_H, PALETTE_W, PALETTE_H);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, h - PALETTE_H + 0.5, PALETTE_W - 1, PALETTE_H - 1);
+
+      const pw = getPaletteWorld();
+      for (const p of pw) {
+        drawTileShape(worldVerts(p), p.type, false, false);
+      }
+
+      const bx = RANDOM_BTN.x, by = h - 38;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(bx, by, RANDOM_BTN.w, RANDOM_BTN.h, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.font = '300 12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Random', bx + RANDOM_BTN.w / 2, by + 18);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+      ctx.font = '300 9px system-ui, sans-serif';
+      ctx.fillText('(R)', bx + RANDOM_BTN.w / 2, by + RANDOM_BTN.h + 12);
+    }
+
+    function render() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const bg = ctx.createLinearGradient(0, 0, w, h);
+      bg.addColorStop(0, '#1c1410');
+      bg.addColorStop(0.5, '#221a14');
+      bg.addColorStop(1, '#1a1210');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Valid placement ghosts (always show all types)
+      for (const vp of validPlacements) {
+        drawTileShape(worldVerts(vp), vp.type, false, true);
+      }
+
+      // Placed tiles
+      for (let i = 0; i < placedTiles.length; i++) {
+        drawTileShape(worldVerts(placedTiles[i]), placedTiles[i].type, i === selectedIdx, false);
+      }
+
+      // Snap ghost
+      if (dragging && dragging.snapPreview) {
+        const ghost = { ...dragging.tile, x: dragging.snapPreview[0], y: dragging.snapPreview[1] };
+        drawTileShape(worldVerts(ghost), ghost.type, false, true);
+      }
+
+      // Dragged tile
+      if (dragging) {
+        drawTileShape(worldVerts(dragging.tile), dragging.tile.type, true, false);
+      }
+
+      drawPalette();
+
+      ctx.fillStyle = '#333';
+      ctx.font = '300 12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('drag from palette · \u2190 \u2192 rotate · click to select', w / 2, h - 12);
+    }
+
+    // ─── Mouse interaction ───────────────────────────────────
+
+    function commitDrag() {
+      if (!dragging) return;
+      if (dragging.snapPreview) {
+        dragging.tile.x = dragging.snapPreview[0];
+        dragging.tile.y = dragging.snapPreview[1];
+      }
+
+      // Try to match dragged tile to a reference tile
+      const key = refTileKey(dragging.tile);
+      for (let ri = 0; ri < referenceTiles.length; ri++) {
+        if (revealedSet.has(ri)) continue;
+        if (refTileKey(referenceTiles[ri]) === key) {
+          revealedSet.add(ri);
+          placedTiles.push(referenceTiles[ri]);
+          selectedIdx = placedTiles.length - 1;
+          dragging = null;
+          canvas.style.cursor = 'default';
+          recomputePlacements();
+          render();
+          return;
+        }
+      }
+
+      // If no reference match, still place it (for manual exploration)
+      placedTiles.push(dragging.tile);
+      selectedIdx = placedTiles.length - 1;
+      dragging = null;
+      canvas.style.cursor = 'default';
+      recomputePlacements();
+      render();
+    }
+
+    canvas.addEventListener('mousedown', e => {
+      const h = window.innerHeight;
+      const bx = RANDOM_BTN.x, by = h - 38;
+      if (e.clientX >= bx && e.clientX <= bx + RANDOM_BTN.w &&
+          e.clientY >= by && e.clientY <= by + RANDOM_BTN.h) {
+        placeRandom();
+        return;
+      }
+
+      const hit = hitTest(e.clientX, e.clientY);
+      if (!hit) { selectedIdx = -1; render(); return; }
+
+      if (hit.kind === 'ghost') {
+        const vp = validPlacements[hit.idx];
+        revealedSet.add(vp.refIdx);
+        placedTiles.push({ type: vp.type, x: vp.x, y: vp.y, axis: vp.axis });
+        selectedIdx = placedTiles.length - 1;
+        recomputePlacements();
+        render();
+        return;
+      }
+
+      if (hit.kind === 'palette') {
+        const pw = getPaletteWorld();
+        const src = pw[hit.idx];
+        const tile = { type: src.type, x: src.x, y: src.y, axis: src.axis };
+        dragging = {
+          tile,
+          offsetX: e.clientX - src.x,
+          offsetY: e.clientY - src.y,
+          fromPalette: true,
+          snapPreview: null,
+        };
+      } else {
+        const tile = placedTiles.splice(hit.idx, 1)[0];
+        selectedIdx = -1;
+        dragging = {
+          tile,
+          offsetX: e.clientX - tile.x,
+          offsetY: e.clientY - tile.y,
+          fromPalette: false,
+          snapPreview: null,
+        };
+        recomputePlacements();
+      }
+      canvas.style.cursor = 'grabbing';
+      render();
+    });
+
+    canvas.addEventListener('mousemove', e => {
+      if (dragging) {
+        dragging.tile.x = e.clientX - dragging.offsetX;
+        dragging.tile.y = e.clientY - dragging.offsetY;
+        dragging.snapPreview = findSnap(dragging.tile);
+        render();
+      } else {
+        const hit = hitTest(e.clientX, e.clientY);
+        canvas.style.cursor = hit ? 'grab' : 'default';
+      }
+    });
+
+    canvas.addEventListener('mouseup', () => { commitDrag(); });
+    canvas.addEventListener('mouseleave', () => { commitDrag(); });
+
+    // ─── Keyboard rotation ───────────────────────────────────
+
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const delta = e.key === 'ArrowLeft' ? -A36 : A36;
+
+      if (dragging) {
+        dragging.tile.axis += delta;
+        dragging.snapPreview = findSnap(dragging.tile);
+        render();
+      } else if (selectedIdx >= 0) {
+        placedTiles[selectedIdx].axis += delta;
+        recomputePlacements();
+        render();
+      }
+    });
+
+    // ─── Random placement ──────────────────────────────────
+
+    function placeRandom() {
+      if (validPlacements.length === 0) return;
+      const vp = validPlacements[Math.floor(Math.random() * validPlacements.length)];
+      revealedSet.add(vp.refIdx);
+      placedTiles.push({ type: vp.type, x: vp.x, y: vp.y, axis: vp.axis });
+      selectedIdx = -1;
+      recomputePlacements();
+      render();
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'r' || e.key === 'R') {
+        if (!e.metaKey && !e.ctrlKey) placeRandom();
+      }
+    });
+
+    // ─── Init ────────────────────────────────────────────────
+
+    function init() {
+      const w = window.innerWidth, h = window.innerHeight;
+
+      // Generate reference tiling via subdivision
+      referenceTiles = generateReference(w / 2, h / 2);
+      console.log(`Generated ${referenceTiles.length} reference tiles`);
+
+      // Find the reference tile closest to center to seed
+      let bestDist = Infinity, bestIdx = -1;
+      for (let i = 0; i < referenceTiles.length; i++) {
+        const t = referenceTiles[i];
+        const dx = t.x - w / 2, dy = t.y - (h / 2 - 20);
+        const d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+
+      if (bestIdx >= 0) {
+        revealedSet.add(bestIdx);
+        placedTiles.push(referenceTiles[bestIdx]);
+      }
+
+      selectedIdx = -1;
+      recomputePlacements();
+      render();
+    }
+
+    window.addEventListener('resize', render);
+    init();
+  })();
+  </script>
+</body>
+</html>

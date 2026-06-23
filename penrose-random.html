@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Random Penrose Tiling</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; overflow: hidden; cursor: none; }
+    canvas { display: block; position: absolute; top: 0; left: 0; }
+    #back { z-index: 0; }
+    #front { z-index: 1; transition: opacity 0.4s ease-in-out; }
+    #info {
+      position: fixed; bottom: 12px; left: 0; right: 0;
+      text-align: center; color: rgba(255,255,255,0.25);
+      font: 300 12px system-ui, sans-serif;
+      pointer-events: none; z-index: 2;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="back"></canvas>
+  <canvas id="front"></canvas>
+  <div id="info"></div>
+  <script>
+  (() => {
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const GR = 1 / PHI;
+    const A36 = Math.PI / 5;
+    const frontCanvas = document.getElementById('front');
+    const backCanvas = document.getElementById('back');
+    const frontCtx = frontCanvas.getContext('2d');
+    const backCtx = backCanvas.getContext('2d');
+
+    const CYCLE_INTERVAL = 1500;
+    const FADE_DURATION = 400;
+    let cycleTimer = null;
+    let showOutlines = true;
+
+    // ─── Palettes ──────────────────────────────────────────
+    const palettes = [
+      { bg: '#1c1410',  kite: '#b8935a', kiteEdge: '#6b4f2a', dart: '#6b4c35', dartEdge: '#3d2518' },
+      { bg: '#0a1520',  kite: '#2e7d9b', kiteEdge: '#134050', dart: '#1b4f6b', dartEdge: '#092530' },
+      { bg: '#101510',  kite: '#6a8a5a', kiteEdge: '#3a5530', dart: '#8a7a6a', dartEdge: '#504038' },
+      { bg: '#1a1010',  kite: '#c47030', kiteEdge: '#803818', dart: '#802848', dartEdge: '#481028' },
+      { bg: '#080c18',  kite: '#c8a840', kiteEdge: '#806818', dart: '#283858', dartEdge: '#121e30' },
+      { bg: '#0a0a0a',  kite: '#606060', kiteEdge: '#303030', dart: '#383838', dartEdge: '#181818' },
+      { bg: '#141010',  kite: '#b06848', kiteEdge: '#703820', dart: '#d4a878', dartEdge: '#907040' },
+      { bg: '#0c1018',  kite: '#a0b8d0', kiteEdge: '#5878a0', dart: '#607890', dartEdge: '#304050' },
+    ];
+
+    // ─── Subdivision ──────────────────────────────────────
+
+    function lerpPt(a, b, t) {
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+
+    function subdivide(tris, depth) {
+      for (let d = 0; d < depth; d++) {
+        const next = [];
+        for (const [type, v1, v2, v3] of tris) {
+          switch (type) {
+            case 'NL': {
+              const p = lerpPt(v1, v3, GR);
+              next.push(['NL', v2, v3, p]);
+              next.push(['TL', p, v1, v2]);
+              break;
+            }
+            case 'NR': {
+              const p = lerpPt(v1, v2, GR);
+              next.push(['NR', v3, p, v2]);
+              next.push(['TR', p, v3, v1]);
+              break;
+            }
+            case 'TL': {
+              const p1 = lerpPt(v3, v1, GR);
+              const p2 = lerpPt(v3, v2, GR);
+              next.push(['TR', p1, p2, v3]);
+              next.push(['NR', p2, p1, v1]);
+              next.push(['TL', p2, v1, v2]);
+              break;
+            }
+            case 'TR': {
+              const p1 = lerpPt(v2, v3, GR);
+              const p2 = lerpPt(v2, v1, GR);
+              next.push(['TR', p1, v3, v1]);
+              next.push(['NL', p1, v1, p2]);
+              next.push(['TL', p2, v2, p1]);
+              break;
+            }
+          }
+        }
+        tris = next;
+      }
+      return tris;
+    }
+
+    function makeSeed(cx, cy, R, rotation, type) {
+      const tris = [];
+      for (let i = 0; i < 5; i++) {
+        const axis = 2 * Math.PI * i / 5 + rotation;
+        const A = [cx, cy];
+        const B = [cx + R * Math.cos(axis + A36), cy + R * Math.sin(axis + A36)];
+        const C = [cx + R * Math.cos(axis),        cy + R * Math.sin(axis)];
+        const D = [cx + R * Math.cos(axis - A36), cy + R * Math.sin(axis - A36)];
+        if (type === 'sun') {
+          tris.push(['TL', A, B, C]);
+          tris.push(['TR', A, D, C]);
+        } else {
+          tris.push(['NL', A, B, C]);
+          tris.push(['NR', A, D, C]);
+        }
+      }
+      return tris;
+    }
+
+    // ─── Drawing ─────────────────────────────────────────
+
+    function drawTriangle(c, v1, v2, v3, fill, edge) {
+      c.beginPath();
+      c.moveTo(v1[0], v1[1]);
+      c.lineTo(v2[0], v2[1]);
+      c.lineTo(v3[0], v3[1]);
+      c.closePath();
+      c.fillStyle = fill;
+      c.fill();
+      if (showOutlines) {
+        c.strokeStyle = edge;
+        c.lineWidth = 0.5;
+        c.stroke();
+      }
+    }
+
+    // ─── Generate & render ───────────────────────────────
+
+    function renderTiling(cvs, c) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      cvs.width = w * dpr;
+      cvs.height = h * dpr;
+      cvs.style.width = w + 'px';
+      cvs.style.height = h + 'px';
+      c.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const pal = palettes[Math.floor(Math.random() * palettes.length)];
+      c.fillStyle = pal.bg;
+      c.fillRect(0, 0, w, h);
+
+      // Random parameters
+      const cx = w / 2 + (Math.random() - 0.5) * w * 0.6;
+      const cy = h / 2 + (Math.random() - 0.5) * h * 0.6;
+      const rotation = Math.random() * 2 * Math.PI;
+      const edgeLen = 15 + Math.random() * 30;
+      const diag = Math.hypot(w, h);
+
+      let depth = 1;
+      while (edgeLen * Math.pow(PHI, depth) < diag * 1.5) depth++;
+
+      const R = edgeLen * Math.pow(PHI, depth);
+      const useStar = Math.random() < 0.3;
+      const seed = makeSeed(cx, cy, R, rotation, useStar ? 'star' : 'sun');
+      const tris = subdivide(seed, depth);
+
+      // Clip and draw triangles directly — no grouping needed
+      const margin = edgeLen * 2;
+      let count = 0;
+      for (const [type, v1, v2, v3] of tris) {
+        const mx = (v1[0] + v2[0] + v3[0]) / 3;
+        const my = (v1[1] + v2[1] + v3[1]) / 3;
+        if (mx < -margin || mx > w + margin || my < -margin || my > h + margin) continue;
+
+        const isKite = type[0] === 'T';
+        drawTriangle(c, v1, v2, v3,
+          isKite ? pal.kite : pal.dart,
+          isKite ? pal.kiteEdge : pal.dartEdge);
+        count++;
+      }
+
+      return { count, seed: useStar ? 'star' : 'sun', depth };
+    }
+
+    // ─── Crossfade cycle ────────────────────────────────
+
+    function cycle() {
+      const info = renderTiling(backCanvas, backCtx);
+      frontCanvas.style.opacity = '0';
+
+      setTimeout(() => {
+        frontCanvas.width = backCanvas.width;
+        frontCanvas.height = backCanvas.height;
+        frontCanvas.style.width = backCanvas.style.width;
+        frontCanvas.style.height = backCanvas.style.height;
+        frontCtx.drawImage(backCanvas, 0, 0);
+        frontCanvas.style.opacity = '1';
+
+        document.getElementById('info').textContent =
+          `${info.count} triangles · ${info.seed} · depth ${info.depth}`;
+      }, FADE_DURATION + 50);
+    }
+
+    function startCycle() {
+      if (cycleTimer) clearInterval(cycleTimer);
+      cycleTimer = setInterval(cycle, CYCLE_INTERVAL);
+    }
+
+    // ─── Interaction ─────────────────────────────────────
+
+    let cursorTimer = null;
+    document.addEventListener('mousemove', () => {
+      document.body.style.cursor = 'pointer';
+      if (cursorTimer) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => { document.body.style.cursor = 'none'; }, 2000);
+    });
+
+    frontCanvas.addEventListener('click', () => { cycle(); startCycle(); });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === ' ') {
+        e.preventDefault();
+        showOutlines = !showOutlines;
+        renderTiling(frontCanvas, frontCtx);
+      } else if (e.key === 'Enter') {
+        cycle(); startCycle();
+      } else if (e.key === 'Escape') {
+        if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+      }
+    });
+
+    window.addEventListener('resize', () => renderTiling(frontCanvas, frontCtx));
+
+    renderTiling(frontCanvas, frontCtx);
+    frontCanvas.style.opacity = '1';
+    startCycle();
+  })();
+  </script>
+</body>
+</html>

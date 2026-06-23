@@ -16,7 +16,8 @@ export default defineConfig({
         fluid: resolve(__dirname, 'fluid.html'),
         mazeInteractive: resolve(__dirname, 'mazes/interactive.html'),
         mazeKnotted: resolve(__dirname, 'mazes/knotted.html'),
-        mazeCeltic: resolve(__dirname, 'mazes/celtic.html'),
+        penrose: resolve(__dirname, 'penrose.html'),
+        penroseRandom: resolve(__dirname, 'penrose-random.html'),
       }
     }
   }
