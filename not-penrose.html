@@ -9,7 +9,7 @@
     body { background: #0a0a0a; overflow: hidden; cursor: none; }
     canvas { display: block; position: absolute; top: 0; left: 0; }
     #back { z-index: 0; }
-    #front { z-index: 1; transition: opacity 0.4s ease-in-out; }
+    #front { z-index: 1; transition: opacity 0.6s ease-in-out; }
     #info {
       position: fixed; bottom: 12px; left: 0; right: 0;
       text-align: center; color: rgba(255,255,255,0.25);
@@ -29,8 +29,8 @@
     const frontCtx = frontCanvas.getContext('2d');
     const backCtx = backCanvas.getContext('2d');
 
-    const CYCLE_INTERVAL = 1500;
-    const FADE_DURATION = 400;
+    const CYCLE_INTERVAL = 2500;
+    const FADE_DURATION = 600;
     let cycleTimer = null;
     let showOutlines = true;
 
