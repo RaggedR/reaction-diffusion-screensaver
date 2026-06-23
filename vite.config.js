@@ -18,6 +18,7 @@ export default defineConfig({
         mazeKnotted: resolve(__dirname, 'mazes/knotted.html'),
         penrose: resolve(__dirname, 'penrose.html'),
         penroseRandom: resolve(__dirname, 'penrose-random.html'),
+        notPenrose: resolve(__dirname, 'not-penrose.html'),
       }
     }
   }
