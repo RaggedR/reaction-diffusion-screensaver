@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Random Substitution Tilings</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0a; overflow: hidden; cursor: none; }
+    canvas { display: block; }
+    #info {
+      position: fixed; bottom: 12px; left: 0; right: 0;
+      text-align: center; color: rgba(255,255,255,0.25);
+      font: 300 12px system-ui, sans-serif;
+      pointer-events: none; z-index: 2;
+    }
+
+    /* ─── Controls panel ─── */
+    #panel {
+      position: fixed; top: 0; right: -320px; width: 300px;
+      height: 100vh; z-index: 10;
+      background: rgba(10, 10, 10, 0.92);
+      border-left: 1px solid rgba(255,255,255,0.08);
+      backdrop-filter: blur(12px);
+      padding: 24px 20px;
+      overflow-y: auto;
+      transition: right 0.3s ease;
+      font: 13px/1.6 system-ui, -apple-system, sans-serif;
+      color: rgba(255,255,255,0.7);
+    }
+    #panel.open { right: 0; }
+    #panel h2 {
+      font: 600 11px/1 system-ui; text-transform: uppercase;
+      letter-spacing: 0.12em; color: rgba(255,255,255,0.35);
+      margin: 20px 0 10px; padding-bottom: 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    #panel h2:first-child { margin-top: 0; }
+    #panel label {
+      display: flex; justify-content: space-between; align-items: center;
+      margin: 6px 0; font-size: 12px;
+    }
+    #panel label span.val {
+      color: rgba(255,255,255,0.4); font-variant-numeric: tabular-nums;
+      min-width: 32px; text-align: right;
+    }
+    #panel input[type="range"] {
+      -webkit-appearance: none; appearance: none;
+      width: 130px; height: 3px; background: rgba(255,255,255,0.12);
+      border-radius: 2px; outline: none;
+    }
+    #panel input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 12px; height: 12px; border-radius: 50%;
+      background: rgba(255,255,255,0.5); cursor: pointer;
+    }
+    #panel select {
+      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;
+      padding: 3px 6px; font-size: 12px; outline: none; cursor: pointer;
+    }
+    #panel button {
+      background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.6);
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;
+      padding: 6px 14px; font: 12px system-ui; cursor: pointer;
+      transition: background 0.15s;
+    }
+    #panel button:hover { background: rgba(255,255,255,0.15); }
+    .btn-row { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+    #tab { position: fixed; right: 0; top: 50%; transform: translateY(-50%);
+      width: 20px; height: 60px; z-index: 9;
+      background: rgba(255,255,255,0.04); border-radius: 4px 0 0 4px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: background 0.2s;
+    }
+    #tab:hover { background: rgba(255,255,255,0.1); }
+    #tab::after { content: '‹'; color: rgba(255,255,255,0.3); font-size: 16px; }
+    #panel.open ~ #tab { right: 300px; }
+    #panel.open ~ #tab::after { content: '›'; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="info"></div>
+  <div id="panel">
+    <h2>Substitution</h2>
+    <label>Split α <input type="range" id="splitA" min="0.20" max="0.80" step="0.005" value="0.555"> <span class="val" id="splitAVal">0.555</span></label>
+    <label>Split β <input type="range" id="splitB" min="0.20" max="0.80" step="0.005" value="0.640"> <span class="val" id="splitBVal">0.640</span></label>
+
+    <h2>Structure</h2>
+    <label>Depth <input type="range" id="depth" min="3" max="8" step="1" value="5"> <span class="val" id="depthVal">5</span></label>
+    <label>Seed
+      <select id="seed">
+        <option value="sun" selected>Sun (10)</option>
+        <option value="star">Star (5)</option>
+        <option value="wheel">Wheel (20)</option>
+      </select>
+    </label>
+
+    <h2>Appearance</h2>
+    <label>Palette
+      <select id="palette">
+        <option value="steel" selected>Steel</option>
+        <option value="copper">Copper</option>
+        <option value="gold">Gold</option>
+        <option value="jade">Jade</option>
+        <option value="amethyst">Amethyst</option>
+        <option value="obsidian">Obsidian</option>
+      </select>
+    </label>
+    <label>Edges <input type="range" id="edgeW" min="0" max="2" step="0.1" value="0.8"> <span class="val" id="edgeWVal">0.8</span></label>
+
+    <h2>Actions</h2>
+    <div class="btn-row">
+      <button id="btnRender">Render (Space)</button>
+      <button id="btnRandom">Randomize (R)</button>
+    </div>
+    <div style="margin-top:16px; font-size:11px; color:rgba(255,255,255,0.2)">
+      P — panel · D — diagram · Space — render · R — randomize
+    </div>
+  </div>
+  <div id="tab"></div>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const panel = document.getElementById('panel');
+    const tab = document.getElementById('tab');
+
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const INVPHI = 1 / PHI;
+    let showDiagram = true;
+
+    // ─── Metallic palettes ───────────────────────────────
+    // Each has: bg, kite {base, light, dark, edge}, dart {base, light, dark, edge}
+    const palettes = {
+      steel: {
+        bg: '#0a0e14',
+        kite: { base: '#7a8fa0', light: '#a8bcc8', dark: '#4a5a68', edge: '#2a3a48' },
+        dart: { base: '#5a6878', light: '#8098a8', dark: '#354550', edge: '#1e2e3a' },
+      },
+      copper: {
+        bg: '#140e0a',
+        kite: { base: '#b87040', light: '#d89868', dark: '#804820', edge: '#4a2810' },
+        dart: { base: '#905838', light: '#b87858', dark: '#603818', edge: '#3a200a' },
+      },
+      gold: {
+        bg: '#0e0c04',
+        kite: { base: '#c0a040', light: '#e0c868', dark: '#887020', edge: '#504010' },
+        dart: { base: '#a08830', light: '#c0a850', dark: '#706018', edge: '#40300a' },
+      },
+      jade: {
+        bg: '#060e0a',
+        kite: { base: '#4a8a60', light: '#70b088', dark: '#2a5a38', edge: '#143020' },
+        dart: { base: '#387048', light: '#589870', dark: '#1e4028', edge: '#0e2818' },
+      },
+      amethyst: {
+        bg: '#0c0814',
+        kite: { base: '#7858a0', light: '#a080c8', dark: '#503878', edge: '#2a1848' },
+        dart: { base: '#604888', light: '#8868a8', dark: '#382860', edge: '#201038' },
+      },
+      obsidian: {
+        bg: '#080808',
+        kite: { base: '#585858', light: '#808080', dark: '#303030', edge: '#181818' },
+        dart: { base: '#404040', light: '#606060', dark: '#202020', edge: '#101010' },
+      },
+    };
+
+    function lerp(a, b, t) {
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+
+    function vkey(v) {
+      return `${Math.round(v[0] * 100)},${Math.round(v[1] * 100)}`;
+    }
+
+    // ─── Controls ────────────────────────────────────────
+
+    function getParams() {
+      return {
+        splitA: parseFloat(document.getElementById('splitA').value),
+        splitB: parseFloat(document.getElementById('splitB').value),
+        depth:  parseInt(document.getElementById('depth').value),
+        seed:   document.getElementById('seed').value,
+        palette: document.getElementById('palette').value,
+        edgeW:  parseFloat(document.getElementById('edgeW').value),
+      };
+    }
+
+    for (const id of ['splitA', 'splitB', 'edgeW']) {
+      const el = document.getElementById(id);
+      const valEl = document.getElementById(id + 'Val');
+      el.addEventListener('input', () => {
+        valEl.textContent = parseFloat(el.value).toFixed(id === 'edgeW' ? 1 : 3);
+      });
+    }
+    document.getElementById('depth').addEventListener('input', () => {
+      document.getElementById('depthVal').textContent = document.getElementById('depth').value;
+    });
+
+    // ─── Deflation (parameterized split ratios) ──────────
+    //
+    // Standard P2 kite-dart uses 1/φ ≈ 0.618. We let α and β
+    // deviate from this to create "wrong" but beautiful tilings.
+    //
+    // Type 0 = golden triangle (half-kite), 36°-72°-72°
+    // Type 1 = golden gnomon (half-dart), 108°-36°-36°
+
+    function deflate(triangles, splitA, splitB) {
+      const result = [];
+      for (const [color, A, B, C] of triangles) {
+        if (color === 0) {
+          // Golden triangle → 3 children
+          const P = lerp(A, C, splitA);
+          const Q = lerp(A, B, splitA);
+          result.push([0, A, Q, P]);
+          result.push([1, P, Q, C]);
+          result.push([0, C, Q, B]);
+        } else {
+          // Golden gnomon → 2 children
+          const R = lerp(B, C, splitB);
+          result.push([0, B, A, R]);
+          result.push([1, R, A, C]);
+        }
+      }
+      return result;
+    }
+
+    // ─── Seed shapes ─────────────────────────────────────
+
+    function makeSeed(cx, cy, radius, type) {
+      const tris = [];
+      const A36 = Math.PI / 5;
+      const n = type === 'sun' ? 10 : type === 'star' ? 5 : 20;
+      for (let i = 0; i < n; i++) {
+        const a1 = (2 * Math.PI * i) / n - Math.PI / 2;
+        const a2 = (2 * Math.PI * (i + 1)) / n - Math.PI / 2;
+        tris.push([0,
+          [cx, cy],
+          [cx + radius * Math.cos(a1), cy + radius * Math.sin(a1)],
+          [cx + radius * Math.cos(a2), cy + radius * Math.sin(a2)],
+        ]);
+      }
+      return tris;
+    }
+
+    // ─── Pair half-tiles into kites and darts ────────────
+
+    function buildTiles(triangles) {
+      const edgeMap = {};
+      for (let i = 0; i < triangles.length; i++) {
+        const [color, A, B, C] = triangles[i];
+        for (const [a, b] of [[A, B], [B, C], [A, C]]) {
+          const k1 = color + '|' + vkey(a) + '|' + vkey(b);
+          const k2 = color + '|' + vkey(b) + '|' + vkey(a);
+          const key = edgeMap[k1] ? k1 : edgeMap[k2] ? k2 : k1;
+          if (!edgeMap[key]) edgeMap[key] = [];
+          edgeMap[key].push(i);
+        }
+      }
+
+      const paired = new Set();
+      const tiles = [];
+
+      for (const indices of Object.values(edgeMap)) {
+        if (indices.length !== 2) continue;
+        const [i, j] = indices;
+        if (paired.has(i) || paired.has(j)) continue;
+
+        const [c, A1, B1, C1] = triangles[i];
+        const [, A2, B2, C2] = triangles[j];
+        const all1 = [A1, B1, C1], all2 = [A2, B2, C2];
+        const shared = [], unshared = [];
+
+        for (let k = 0; k < 3; k++) {
+          if (all2.some(v => vkey(v) === vkey(all1[k]))) shared.push(all1[k]);
+          else unshared.push(all1[k]);
+        }
+        for (let k = 0; k < 3; k++) {
+          if (!shared.some(v => vkey(v) === vkey(all2[k]))) unshared.push(all2[k]);
+        }
+        if (shared.length !== 2 || unshared.length !== 2) continue;
+
+        paired.add(i); paired.add(j);
+        tiles.push({
+          type: c === 0 ? 'kite' : 'dart',
+          verts: [shared[0], unshared[0], shared[1], unshared[1]],
+          halves: [triangles[i], triangles[j]],
+        });
+      }
+
+      // Unpaired triangles rendered as-is
+      const orphans = triangles.filter((_, i) => !paired.has(i));
+      return { tiles, orphans };
+    }
+
+    // ─── Beveled tile rendering ──────────────────────────
+
+    function drawBeveledTile(verts, wood, edgeW) {
+      const cx = (verts[0][0] + verts[1][0] + verts[2][0] + verts[3][0]) / 4;
+      const cy = (verts[0][1] + verts[1][1] + verts[2][1] + verts[3][1]) / 4;
+
+      // Base gradient: light to dark across the tile
+      const grad = ctx.createLinearGradient(verts[0][0], verts[0][1], verts[2][0], verts[2][1]);
+      grad.addColorStop(0, wood.light);
+      grad.addColorStop(0.35, wood.base);
+      grad.addColorStop(0.75, wood.dark);
+      grad.addColorStop(1, wood.base);
+
+      ctx.beginPath();
+      ctx.moveTo(verts[0][0], verts[0][1]);
+      for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // Specular highlight
+      const hx = cx * 0.6 + verts[0][0] * 0.4;
+      const hy = cy * 0.6 + verts[0][1] * 0.4;
+      const sz = Math.hypot(verts[2][0] - verts[0][0], verts[2][1] - verts[0][1]);
+      const highlight = ctx.createRadialGradient(hx, hy, 0, cx, cy, sz * 0.6);
+      highlight.addColorStop(0, 'rgba(255, 255, 255, 0.15)');
+      highlight.addColorStop(0.5, 'rgba(255, 255, 255, 0.03)');
+      highlight.addColorStop(1, 'rgba(0, 0, 0, 0.12)');
+
+      ctx.beginPath();
+      ctx.moveTo(verts[0][0], verts[0][1]);
+      for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = highlight;
+      ctx.fill();
+
+      // Edge stroke
+      if (edgeW > 0) {
+        ctx.beginPath();
+        ctx.moveTo(verts[0][0], verts[0][1]);
+        for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i][0], verts[i][1]);
+        ctx.closePath();
+        ctx.strokeStyle = wood.edge;
+        ctx.lineWidth = edgeW;
+        ctx.stroke();
+      }
+    }
+
+    // ─── Rule diagram ────────────────────────────────────
+
+    function drawRuleDiagram(pal, splitA, splitB, x0, y0) {
+      const cellW = 80, cellH = 70, pad = 12;
+      const totalW = 2 * cellW + pad * 3;
+      const totalH = cellH + pad * 2 + 20;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.beginPath();
+      ctx.roundRect(x0, y0 - totalH, totalW, totalH, 8);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      const rules = [
+        { label: 'T₀ (half-kite)', wood: pal.kite, nChildren: 3, color: 0 },
+        { label: 'T₁ (half-dart)', wood: pal.dart, nChildren: 2, color: 1 },
+      ];
+
+      for (let r = 0; r < 2; r++) {
+        const cx = x0 + pad + r * (cellW + pad) + cellW / 2;
+        const cy = y0 - pad - 14;
+        const h = cellH * 0.7, w = cellW * 0.8;
+
+        // Reference triangle
+        const A = [cx, cy - h * 0.6];
+        const B = [cx - w / 2, cy + h * 0.4];
+        const C = [cx + w / 2, cy + h * 0.4];
+
+        // Compute children
+        const edges = [[A, B], [B, C], [C, A]];
+        let children, splitVerts;
+        if (r === 0) {
+          const P = lerp(C, A, splitA); // edge 2 (C→A)
+          const Q = lerp(A, B, splitA); // edge 0 (A→B)
+          splitVerts = [P, Q];
+          // Children: [A,Q,P]=T0, [P,Q,C]=T1, [C,Q,B]=T0
+          children = [
+            { v: [A, Q, P], type: 0 },
+            { v: [P, Q, C], type: 1 },
+            { v: [C, Q, B], type: 0 },
+          ];
+        } else {
+          const R = lerp(B, C, splitB); // edge 1 (B→C)
+          splitVerts = [R];
+          // Children: [B,A,R]=T0, [R,A,C]=T1
+          children = [
+            { v: [B, A, R], type: 0 },
+            { v: [R, A, C], type: 1 },
+          ];
+        }
+
+        // Draw children filled
+        for (const child of children) {
+          const wood = child.type === 0 ? pal.kite : pal.dart;
+          ctx.beginPath();
+          ctx.moveTo(child.v[0][0], child.v[0][1]);
+          ctx.lineTo(child.v[1][0], child.v[1][1]);
+          ctx.lineTo(child.v[2][0], child.v[2][1]);
+          ctx.closePath();
+          ctx.fillStyle = wood.base;
+          ctx.fill();
+          ctx.strokeStyle = wood.edge;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+        // Parent outline
+        ctx.beginPath();
+        ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+        ctx.closePath();
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Split points
+        for (const sv of splitVerts) {
+          ctx.beginPath(); ctx.arc(sv[0], sv[1], 2.5, 0, 2 * Math.PI);
+          ctx.fillStyle = '#fff'; ctx.fill();
+        }
+
+        // Labels
+        ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fillText('A', A[0], A[1] - 5);
+        ctx.fillText('B', B[0] - 5, B[1] + 3);
+        ctx.fillText('C', C[0] + 5, C[1] + 3);
+
+        // Type label
+        ctx.fillStyle = rules[r].wood.light;
+        ctx.font = '10px system-ui';
+        ctx.fillText(rules[r].label, cx, cy + h * 0.4 + 14);
+      }
+
+      // Show split values
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(`α=${splitA.toFixed(3)}  β=${splitB.toFixed(3)}  φ⁻¹=${INVPHI.toFixed(3)}`, x0 + pad, y0 - totalH + 14);
+    }
+
+    // ─── Main render ─────────────────────────────────────
+
+    function render() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth, h = window.innerHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const p = getParams();
+      const pal = palettes[p.palette] || palettes.steel;
+
+      ctx.fillStyle = pal.bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Generate: oversized seed → deflate → pair into tiles
+      const radius = Math.hypot(w, h) * 0.55;
+      let tris = makeSeed(w / 2, h / 2, radius, p.seed);
+      for (let d = 0; d < p.depth; d++) {
+        tris = deflate(tris, p.splitA, p.splitB);
+      }
+
+      const { tiles, orphans } = buildTiles(tris);
+
+      // Draw visible tiles with bevel shading
+      const margin = 60;
+      let drawn = 0;
+      for (const tile of tiles) {
+        const vs = tile.verts;
+        const minX = Math.min(vs[0][0], vs[1][0], vs[2][0], vs[3][0]);
+        const maxX = Math.max(vs[0][0], vs[1][0], vs[2][0], vs[3][0]);
+        const minY = Math.min(vs[0][1], vs[1][1], vs[2][1], vs[3][1]);
+        const maxY = Math.max(vs[0][1], vs[1][1], vs[2][1], vs[3][1]);
+        if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+
+        const wood = tile.type === 'kite' ? pal.kite : pal.dart;
+        drawBeveledTile(vs, wood, p.edgeW);
+        drawn++;
+      }
+
+      // Draw orphan half-tiles (unpaired boundary triangles)
+      for (const [color, A, B, C] of orphans) {
+        const minX = Math.min(A[0], B[0], C[0]);
+        const maxX = Math.max(A[0], B[0], C[0]);
+        const minY = Math.min(A[1], B[1], C[1]);
+        const maxY = Math.max(A[1], B[1], C[1]);
+        if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+
+        const wood = color === 0 ? pal.kite : pal.dart;
+        // Render as triangle with same bevel style
+        const cx = (A[0] + B[0] + C[0]) / 3;
+        const cy = (A[1] + B[1] + C[1]) / 3;
+        const grad = ctx.createLinearGradient(A[0], A[1], C[0], C[1]);
+        grad.addColorStop(0, wood.light);
+        grad.addColorStop(0.35, wood.base);
+        grad.addColorStop(0.75, wood.dark);
+        grad.addColorStop(1, wood.base);
+        ctx.beginPath();
+        ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+        ctx.closePath();
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        const sz = Math.hypot(C[0] - A[0], C[1] - A[1]);
+        const hx = cx * 0.6 + A[0] * 0.4;
+        const hy = cy * 0.6 + A[1] * 0.4;
+        const hl = ctx.createRadialGradient(hx, hy, 0, cx, cy, sz * 0.6);
+        hl.addColorStop(0, 'rgba(255,255,255,0.12)');
+        hl.addColorStop(0.5, 'rgba(255,255,255,0.02)');
+        hl.addColorStop(1, 'rgba(0,0,0,0.10)');
+        ctx.beginPath();
+        ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+        ctx.closePath();
+        ctx.fillStyle = hl;
+        ctx.fill();
+
+        if (p.edgeW > 0) {
+          ctx.beginPath();
+          ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+          ctx.closePath();
+          ctx.strokeStyle = wood.edge;
+          ctx.lineWidth = p.edgeW;
+          ctx.stroke();
+        }
+        drawn++;
+      }
+
+      // Rule diagram
+      if (showDiagram) {
+        drawRuleDiagram(pal, p.splitA, p.splitB, 16, h - 16);
+      }
+
+      document.getElementById('info').textContent =
+        `${drawn} tiles · depth ${p.depth} · α=${p.splitA.toFixed(3)} β=${p.splitB.toFixed(3)}`;
+    }
+
+    // ─── Panel toggle ────────────────────────────────────
+
+    let panelOpen = false;
+    function togglePanel() {
+      panelOpen = !panelOpen;
+      panel.classList.toggle('open', panelOpen);
+      document.body.style.cursor = panelOpen ? 'default' : 'none';
+    }
+    tab.addEventListener('click', e => { e.stopPropagation(); togglePanel(); });
+
+    // ─── Wire controls ───────────────────────────────────
+
+    for (const id of ['splitA', 'splitB', 'depth', 'edgeW']) {
+      document.getElementById(id).addEventListener('input', render);
+    }
+    for (const id of ['seed', 'palette']) {
+      document.getElementById(id).addEventListener('change', render);
+    }
+    document.getElementById('btnRender').addEventListener('click', render);
+    document.getElementById('btnRandom').addEventListener('click', () => {
+      const a = 0.3 + Math.random() * 0.4;
+      const b = 0.3 + Math.random() * 0.4;
+      document.getElementById('splitA').value = a.toFixed(3);
+      document.getElementById('splitB').value = b.toFixed(3);
+      document.getElementById('splitAVal').textContent = a.toFixed(3);
+      document.getElementById('splitBVal').textContent = b.toFixed(3);
+      // Random palette
+      const pals = Object.keys(palettes);
+      document.getElementById('palette').value = pals[Math.floor(Math.random() * pals.length)];
+      // Random seed
+      const seeds = ['sun', 'star', 'wheel'];
+      document.getElementById('seed').value = seeds[Math.floor(Math.random() * seeds.length)];
+      render();
+    });
+
+    // ─── Keyboard ────────────────────────────────────────
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'p' || e.key === 'P') togglePanel();
+      else if (e.key === 'd' || e.key === 'D') { showDiagram = !showDiagram; render(); }
+      else if (e.key === ' ') { e.preventDefault(); render(); }
+      else if (e.key === 'r' || e.key === 'R') document.getElementById('btnRandom').click();
+      else if (e.key === 'ArrowUp') {
+        const d = document.getElementById('depth');
+        d.value = Math.min(8, parseInt(d.value) + 1);
+        document.getElementById('depthVal').textContent = d.value;
+        render();
+      } else if (e.key === 'ArrowDown') {
+        const d = document.getElementById('depth');
+        d.value = Math.max(3, parseInt(d.value) - 1);
+        document.getElementById('depthVal').textContent = d.value;
+        render();
+      }
+    });
+
+    let cursorTimer = null;
+    document.addEventListener('mousemove', () => {
+      document.body.style.cursor = panelOpen ? 'default' : 'pointer';
+      if (cursorTimer) clearTimeout(cursorTimer);
+      if (!panelOpen) cursorTimer = setTimeout(() => { document.body.style.cursor = 'none'; }, 2000);
+    });
+
+    window.addEventListener('resize', render);
+    render();
+  })();
+  </script>
+</body>
+</html>

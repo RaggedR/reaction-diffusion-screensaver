@@ -19,6 +19,10 @@ export default defineConfig({
         penrose: resolve(__dirname, 'penrose.html'),
         penroseRandom: resolve(__dirname, 'penrose-random.html'),
         notPenrose: resolve(__dirname, 'not-penrose.html'),
+        penroseDeflation: resolve(__dirname, 'penrose-deflation.html'),
+        kiteDecomposition: resolve(__dirname, 'kite-decomposition.html'),
+        randomSubstitution: resolve(__dirname, 'random-substitution.html'),
+        randomSubstitutionScreensaver: resolve(__dirname, 'random-substitution-screensaver.html'),
       }
     }
   }

@@ -1,8 +1,21 @@
-# Music-Reactive Screen Savers & Mazes
+# Music-Reactive Screen Savers, Tilings & Mazes
 
-Browser-based screen savers that respond to music, plus interactive maze generators.
+Browser-based screen savers that respond to music, substitution tilings, and interactive maze generators.
 
-**[Try Reaction-Diffusion](https://raggedr.github.io/reaction-diffusion-screensaver/)** | **[Try Fluid Dynamics](https://raggedr.github.io/reaction-diffusion-screensaver/fluid.html)** | **[Tree Surgery Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/interactive.html)** | **[Knotted Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/knotted.html)**
+**[Try Reaction-Diffusion](https://raggedr.github.io/reaction-diffusion-screensaver/)** | **[Try Fluid Dynamics](https://raggedr.github.io/reaction-diffusion-screensaver/fluid.html)** | **[Substitution Tiling Screensaver](https://raggedr.github.io/reaction-diffusion-screensaver/random-substitution-screensaver.html)** | **[Tree Surgery Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/interactive.html)** | **[Knotted Maze](https://raggedr.github.io/reaction-diffusion-screensaver/mazes/knotted.html)**
+
+## Substitution Tilings
+
+Penrose-style kite-dart tilings with deliberately "wrong" deflation ratios. The correct Penrose tiling uses the golden ratio (1/φ ≈ 0.618) as its split point — perturbing this creates beautiful patterns with star-shaped voids where tiles no longer fit together perfectly.
+
+![Substitution tiling with perturbed deflation](mathematical-mistake.jpeg)
+
+- **[Substitution Screensaver](https://raggedr.github.io/reaction-diffusion-screensaver/random-substitution-screensaver.html)** — Animated screensaver that picks random palettes and split parameters, then sweeps each parameter back and forth to explore the space of "wrong" tilings. Beveled metallic rendering.
+- **[Interactive Substitution](https://raggedr.github.io/reaction-diffusion-screensaver/random-substitution.html)** — Same renderer with a control panel (press P) for manual parameter exploration.
+- **[Penrose Deflation](https://raggedr.github.io/reaction-diffusion-screensaver/penrose-deflation.html)** — Correct P2 kite-dart Robinson triangle deflation with step-by-step subdivision.
+- **[Penrose Placement](https://raggedr.github.io/reaction-diffusion-screensaver/penrose.html)** — Interactive drag-and-drop kite/dart tile placement with snap-to-fit.
+- **[De Bruijn Pentagrid](https://raggedr.github.io/reaction-diffusion-screensaver/not-penrose.html)** — P3 rhombus tiling via the dual pentagrid construction with cycling palettes.
+
 ## Reaction-Diffusion
 
 [Gray-Scott](https://groups.csail.mit.edu/mac/projects/amorphous/GrayScott/) maze patterns that reconfigure on the beat. Expanding ripple waves travel from the center of the screen, forcing the maze to reorganise as they pass through — a wavefront of destruction followed by regrowth. Colours drift slowly through greens, teals, blues, and purples.

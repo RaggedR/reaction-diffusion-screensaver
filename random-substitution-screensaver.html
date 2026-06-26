@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Substitution Tiling Screensaver</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; cursor: none; }
+    canvas { position: absolute; top: 0; left: 0; }
+    #back { z-index: 0; }
+    #front { z-index: 1; }
+  </style>
+</head>
+<body>
+  <canvas id="back"></canvas>
+  <canvas id="front"></canvas>
+  <script>
+  (() => {
+    const frontCanvas = document.getElementById('front');
+    const backCanvas = document.getElementById('back');
+    const frontCtx = frontCanvas.getContext('2d');
+    const backCtx = backCanvas.getContext('2d');
+
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const INVPHI = 1 / PHI;
+
+    // ─── Metallic palettes ───────────────────────────────
+
+    const palettes = [
+      { // Steel
+        bg: '#0a0e14',
+        kite: { base: '#7a8fa0', light: '#a8bcc8', dark: '#4a5a68', edge: '#2a3a48' },
+        dart: { base: '#5a6878', light: '#8098a8', dark: '#354550', edge: '#1e2e3a' },
+      },
+      { // Copper
+        bg: '#140e0a',
+        kite: { base: '#b87040', light: '#d89868', dark: '#804820', edge: '#4a2810' },
+        dart: { base: '#905838', light: '#b87858', dark: '#603818', edge: '#3a200a' },
+      },
+      { // Gold
+        bg: '#0e0c04',
+        kite: { base: '#c0a040', light: '#e0c868', dark: '#887020', edge: '#504010' },
+        dart: { base: '#a08830', light: '#c0a850', dark: '#706018', edge: '#40300a' },
+      },
+      { // Jade
+        bg: '#060e0a',
+        kite: { base: '#4a8a60', light: '#70b088', dark: '#2a5a38', edge: '#143020' },
+        dart: { base: '#387048', light: '#589870', dark: '#1e4028', edge: '#0e2818' },
+      },
+      { // Amethyst
+        bg: '#0c0814',
+        kite: { base: '#7858a0', light: '#a080c8', dark: '#503878', edge: '#2a1848' },
+        dart: { base: '#604888', light: '#8868a8', dark: '#382860', edge: '#201038' },
+      },
+      { // Rose gold
+        bg: '#120a0a',
+        kite: { base: '#c08878', light: '#e0a898', dark: '#886050', edge: '#503830' },
+        dart: { base: '#a07060', light: '#c09080', dark: '#704840', edge: '#402820' },
+      },
+      { // Obsidian
+        bg: '#080808',
+        kite: { base: '#585858', light: '#808080', dark: '#303030', edge: '#181818' },
+        dart: { base: '#404040', light: '#606060', dark: '#202020', edge: '#101010' },
+      },
+      { // Bronze
+        bg: '#0c0a06',
+        kite: { base: '#8a7040', light: '#b09060', dark: '#604a20', edge: '#382a10' },
+        dart: { base: '#706030', light: '#907848', dark: '#504018', edge: '#302008' },
+      },
+    ];
+
+    const seeds = ['sun', 'star', 'wheel'];
+
+    function lerpVal(a, b, t) { return a + (b - a) * t; }
+    function lerp(a, b, t) {
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    function vkey(v) {
+      return `${Math.round(v[0] * 100)},${Math.round(v[1] * 100)}`;
+    }
+
+    // ─── Deflation ───────────────────────────────────────
+
+    function deflate(triangles, splitA, splitB) {
+      const result = [];
+      for (const [color, A, B, C] of triangles) {
+        if (color === 0) {
+          const P = lerp(A, C, splitA);
+          const Q = lerp(A, B, splitA);
+          result.push([0, A, Q, P]);
+          result.push([1, P, Q, C]);
+          result.push([0, C, Q, B]);
+        } else {
+          const R = lerp(B, C, splitB);
+          result.push([0, B, A, R]);
+          result.push([1, R, A, C]);
+        }
+      }
+      return result;
+    }
+
+    function makeSeed(cx, cy, radius, type) {
+      const tris = [];
+      const n = type === 'sun' ? 10 : type === 'star' ? 5 : 20;
+      for (let i = 0; i < n; i++) {
+        const a1 = (2 * Math.PI * i) / n - Math.PI / 2;
+        const a2 = (2 * Math.PI * (i + 1)) / n - Math.PI / 2;
+        tris.push([0,
+          [cx, cy],
+          [cx + radius * Math.cos(a1), cy + radius * Math.sin(a1)],
+          [cx + radius * Math.cos(a2), cy + radius * Math.sin(a2)],
+        ]);
+      }
+      return tris;
+    }
+
+    // ─── Pair half-tiles ─────────────────────────────────
+
+    function buildTiles(triangles) {
+      const edgeMap = {};
+      for (let i = 0; i < triangles.length; i++) {
+        const [color, A, B, C] = triangles[i];
+        for (const [a, b] of [[A, B], [B, C], [A, C]]) {
+          const k1 = color + '|' + vkey(a) + '|' + vkey(b);
+          const k2 = color + '|' + vkey(b) + '|' + vkey(a);
+          const key = edgeMap[k1] ? k1 : edgeMap[k2] ? k2 : k1;
+          if (!edgeMap[key]) edgeMap[key] = [];
+          edgeMap[key].push(i);
+        }
+      }
+      const paired = new Set();
+      const tiles = [];
+      for (const indices of Object.values(edgeMap)) {
+        if (indices.length !== 2) continue;
+        const [i, j] = indices;
+        if (paired.has(i) || paired.has(j)) continue;
+        const [c, A1, B1, C1] = triangles[i];
+        const [, A2, B2, C2] = triangles[j];
+        const all1 = [A1, B1, C1], all2 = [A2, B2, C2];
+        const shared = [], unshared = [];
+        for (let k = 0; k < 3; k++) {
+          if (all2.some(v => vkey(v) === vkey(all1[k]))) shared.push(all1[k]);
+          else unshared.push(all1[k]);
+        }
+        for (let k = 0; k < 3; k++) {
+          if (!shared.some(v => vkey(v) === vkey(all2[k]))) unshared.push(all2[k]);
+        }
+        if (shared.length !== 2 || unshared.length !== 2) continue;
+        paired.add(i); paired.add(j);
+        tiles.push({
+          type: c === 0 ? 'kite' : 'dart',
+          verts: [shared[0], unshared[0], shared[1], unshared[1]],
+        });
+      }
+      const orphans = triangles.filter((_, i) => !paired.has(i));
+      return { tiles, orphans };
+    }
+
+    // ─── Beveled rendering ───────────────────────────────
+
+    function drawBeveledQuad(ctx, verts, wood, edgeW) {
+      const cx = (verts[0][0] + verts[1][0] + verts[2][0] + verts[3][0]) / 4;
+      const cy = (verts[0][1] + verts[1][1] + verts[2][1] + verts[3][1]) / 4;
+
+      const grad = ctx.createLinearGradient(verts[0][0], verts[0][1], verts[2][0], verts[2][1]);
+      grad.addColorStop(0, wood.light);
+      grad.addColorStop(0.35, wood.base);
+      grad.addColorStop(0.75, wood.dark);
+      grad.addColorStop(1, wood.base);
+
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        if (i === 0) ctx.moveTo(verts[i][0], verts[i][1]);
+        else ctx.lineTo(verts[i][0], verts[i][1]);
+      }
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      const hx = cx * 0.6 + verts[0][0] * 0.4;
+      const hy = cy * 0.6 + verts[0][1] * 0.4;
+      const sz = Math.hypot(verts[2][0] - verts[0][0], verts[2][1] - verts[0][1]);
+      const hl = ctx.createRadialGradient(hx, hy, 0, cx, cy, sz * 0.6);
+      hl.addColorStop(0, 'rgba(255,255,255,0.15)');
+      hl.addColorStop(0.5, 'rgba(255,255,255,0.03)');
+      hl.addColorStop(1, 'rgba(0,0,0,0.12)');
+
+      ctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        if (i === 0) ctx.moveTo(verts[i][0], verts[i][1]);
+        else ctx.lineTo(verts[i][0], verts[i][1]);
+      }
+      ctx.closePath();
+      ctx.fillStyle = hl;
+      ctx.fill();
+
+      if (edgeW > 0) {
+        ctx.beginPath();
+        for (let i = 0; i < 4; i++) {
+          if (i === 0) ctx.moveTo(verts[i][0], verts[i][1]);
+          else ctx.lineTo(verts[i][0], verts[i][1]);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = wood.edge;
+        ctx.lineWidth = edgeW;
+        ctx.stroke();
+      }
+    }
+
+    function drawBeveledTri(ctx, A, B, C, wood, edgeW) {
+      const cx = (A[0] + B[0] + C[0]) / 3;
+      const cy = (A[1] + B[1] + C[1]) / 3;
+
+      const grad = ctx.createLinearGradient(A[0], A[1], C[0], C[1]);
+      grad.addColorStop(0, wood.light);
+      grad.addColorStop(0.35, wood.base);
+      grad.addColorStop(0.75, wood.dark);
+      grad.addColorStop(1, wood.base);
+
+      ctx.beginPath();
+      ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      const sz = Math.hypot(C[0] - A[0], C[1] - A[1]);
+      const hx = cx * 0.6 + A[0] * 0.4;
+      const hy = cy * 0.6 + A[1] * 0.4;
+      const hl = ctx.createRadialGradient(hx, hy, 0, cx, cy, sz * 0.6);
+      hl.addColorStop(0, 'rgba(255,255,255,0.12)');
+      hl.addColorStop(0.5, 'rgba(255,255,255,0.02)');
+      hl.addColorStop(1, 'rgba(0,0,0,0.10)');
+
+      ctx.beginPath();
+      ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+      ctx.closePath();
+      ctx.fillStyle = hl;
+      ctx.fill();
+
+      if (edgeW > 0) {
+        ctx.beginPath();
+        ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+        ctx.closePath();
+        ctx.strokeStyle = wood.edge;
+        ctx.lineWidth = edgeW;
+        ctx.stroke();
+      }
+    }
+
+    // ─── Rule diagram ────────────────────────────────────
+
+    function drawRuleDiagram(ctx, pal, splitA, splitB, x0, y0) {
+      const cellW = 80, cellH = 70, pad = 12;
+      const totalW = 2 * cellW + pad * 3;
+      const totalH = cellH + pad * 2 + 20;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.beginPath();
+      ctx.roundRect(x0, y0 - totalH, totalW, totalH, 8);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      for (let r = 0; r < 2; r++) {
+        const cx = x0 + pad + r * (cellW + pad) + cellW / 2;
+        const cy = y0 - pad - 14;
+        const h = cellH * 0.7, w = cellW * 0.8;
+
+        const A = [cx, cy - h * 0.6];
+        const B = [cx - w / 2, cy + h * 0.4];
+        const C = [cx + w / 2, cy + h * 0.4];
+
+        let children, splitVerts;
+        if (r === 0) {
+          const P = lerp(C, A, splitA);
+          const Q = lerp(A, B, splitA);
+          splitVerts = [P, Q];
+          children = [
+            { v: [A, Q, P], type: 0 },
+            { v: [P, Q, C], type: 1 },
+            { v: [C, Q, B], type: 0 },
+          ];
+        } else {
+          const R = lerp(B, C, splitB);
+          splitVerts = [R];
+          children = [
+            { v: [B, A, R], type: 0 },
+            { v: [R, A, C], type: 1 },
+          ];
+        }
+
+        for (const child of children) {
+          const wood = child.type === 0 ? pal.kite : pal.dart;
+          ctx.beginPath();
+          ctx.moveTo(child.v[0][0], child.v[0][1]);
+          ctx.lineTo(child.v[1][0], child.v[1][1]);
+          ctx.lineTo(child.v[2][0], child.v[2][1]);
+          ctx.closePath();
+          ctx.fillStyle = wood.base;
+          ctx.fill();
+          ctx.strokeStyle = wood.edge;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
+
+        // Parent outline
+        ctx.beginPath();
+        ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.lineTo(C[0], C[1]);
+        ctx.closePath();
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        for (const sv of splitVerts) {
+          ctx.beginPath(); ctx.arc(sv[0], sv[1], 2.5, 0, 2 * Math.PI);
+          ctx.fillStyle = '#fff'; ctx.fill();
+        }
+
+        ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fillText('A', A[0], A[1] - 5);
+        ctx.fillText('B', B[0] - 5, B[1] + 3);
+        ctx.fillText('C', C[0] + 5, C[1] + 3);
+
+        const wood = r === 0 ? pal.kite : pal.dart;
+        ctx.fillStyle = wood.light;
+        ctx.font = '10px system-ui';
+        ctx.fillText(r === 0 ? 'half-kite' : 'half-dart', cx, cy + h * 0.4 + 14);
+      }
+
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'left';
+      ctx.fillText(`α=${splitA.toFixed(3)}  β=${splitB.toFixed(3)}`, x0 + pad, y0 - totalH + 14);
+    }
+
+    // ─── Full scene render ───────────────────────────────
+
+    function renderScene(cvs, ctx, splitA, splitB, pal, seed, depth) {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth, h = window.innerHeight;
+      cvs.width = w * dpr; cvs.height = h * dpr;
+      cvs.style.width = w + 'px'; cvs.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      ctx.fillStyle = pal.bg;
+      ctx.fillRect(0, 0, w, h);
+
+      const radius = Math.hypot(w, h) * 0.55;
+      let tris = makeSeed(w / 2, h / 2, radius, seed);
+      for (let d = 0; d < depth; d++) {
+        tris = deflate(tris, splitA, splitB);
+      }
+
+      const { tiles, orphans } = buildTiles(tris);
+      const margin = 60;
+      const edgeW = 0.8;
+
+      for (const tile of tiles) {
+        const vs = tile.verts;
+        const minX = Math.min(vs[0][0], vs[1][0], vs[2][0], vs[3][0]);
+        const maxX = Math.max(vs[0][0], vs[1][0], vs[2][0], vs[3][0]);
+        const minY = Math.min(vs[0][1], vs[1][1], vs[2][1], vs[3][1]);
+        const maxY = Math.max(vs[0][1], vs[1][1], vs[2][1], vs[3][1]);
+        if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+        drawBeveledQuad(ctx, vs, tile.type === 'kite' ? pal.kite : pal.dart, edgeW);
+      }
+
+      for (const [color, A, B, C] of orphans) {
+        const minX = Math.min(A[0], B[0], C[0]);
+        const maxX = Math.max(A[0], B[0], C[0]);
+        const minY = Math.min(A[1], B[1], C[1]);
+        const maxY = Math.max(A[1], B[1], C[1]);
+        if (maxX < -margin || minX > w + margin || maxY < -margin || minY > h + margin) continue;
+        drawBeveledTri(ctx, A, B, C, color === 0 ? pal.kite : pal.dart, edgeW);
+      }
+
+      drawRuleDiagram(ctx, pal, splitA, splitB, 16, h - 16);
+    }
+
+    // ─── Animation state machine ─────────────────────────
+    //
+    // Each scene picks random base α/β and a sweep range.
+    // Then systematically explores:
+    //   1. Sweep α forward  (β held)
+    //   2. Sweep α backward (β held)
+    //   3. Sweep β forward  (α held)
+    //   4. Sweep β backward (α held)
+    //   5. Crossfade to next scene
+
+    const SWEEP_DURATION = 3000;   // ms per sweep direction
+    const FADE_DURATION = 1000;    // ms crossfade
+    const RENDER_INTERVAL = 150;   // ms between renders (~6.7fps)
+    const SWEEP_RANGE = 0.12;      // how far each param sweeps ±
+
+    let scene = null;
+    let sweepIndex = 0;  // 0..3 = α→, α←, β→, β←
+    let phase = 'sweep'; // 'sweep' | 'fade'
+    let phaseStart = 0;
+    let lastRender = 0;
+    let showingFront = true;
+
+    function randomSplit() {
+      return 0.38 + Math.random() * 0.24;
+    }
+
+    function newScene() {
+      const baseA = randomSplit();
+      const baseB = randomSplit();
+      return {
+        pal: palettes[Math.floor(Math.random() * palettes.length)],
+        seed: seeds[Math.floor(Math.random() * seeds.length)],
+        depth: 5,
+        baseA,
+        baseB,
+        // Sweep targets — clamped to valid range
+        loA: Math.max(0.22, baseA - SWEEP_RANGE),
+        hiA: Math.min(0.78, baseA + SWEEP_RANGE),
+        loB: Math.max(0.22, baseB - SWEEP_RANGE),
+        hiB: Math.min(0.78, baseB + SWEEP_RANGE),
+      };
+    }
+
+    // Ping-pong easing: 0→1→0 smoothly
+    function pingPong(t) {
+      const u = Math.min(Math.max(t, 0), 1);
+      // Smooth triangle: ease in-out both directions
+      const p = u < 0.5 ? u * 2 : 2 - u * 2;
+      return p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+    }
+
+    function getSweepValues(scene, sweepIndex, t) {
+      const pp = pingPong(t);
+      let a = scene.baseA, b = scene.baseB;
+      switch (sweepIndex) {
+        case 0: // α forward then back
+        case 1:
+          a = lerpVal(scene.loA, scene.hiA, pp);
+          break;
+        case 2: // β forward then back
+        case 3:
+          b = lerpVal(scene.loB, scene.hiB, pp);
+          break;
+      }
+      return { a, b };
+    }
+
+    function startScene() {
+      scene = newScene();
+      sweepIndex = 0;
+      phase = 'sweep';
+      phaseStart = performance.now();
+      lastRender = 0;
+      renderScene(frontCanvas, frontCtx,
+        scene.baseA, scene.baseB, scene.pal, scene.seed, scene.depth);
+      frontCanvas.style.opacity = '1';
+      showingFront = true;
+    }
+
+    function tick(now) {
+      const elapsed = now - phaseStart;
+
+      if (phase === 'sweep') {
+        if (now - lastRender >= RENDER_INTERVAL) {
+          lastRender = now;
+          const t = Math.min(elapsed / SWEEP_DURATION, 1);
+          const { a, b } = getSweepValues(scene, sweepIndex, t);
+
+          const target = showingFront ? frontCanvas : backCanvas;
+          const targetCtx = showingFront ? frontCtx : backCtx;
+          renderScene(target, targetCtx, a, b, scene.pal, scene.seed, scene.depth);
+        }
+
+        if (elapsed >= SWEEP_DURATION) {
+          sweepIndex++;
+          if (sweepIndex >= 4) {
+            // All sweeps done — crossfade to next scene
+            const nextScene = newScene();
+            const backTarget = showingFront ? backCanvas : frontCanvas;
+            const backTargetCtx = showingFront ? backCtx : frontCtx;
+            renderScene(backTarget, backTargetCtx,
+              nextScene.baseA, nextScene.baseB, nextScene.pal, nextScene.seed, nextScene.depth);
+
+            if (showingFront) {
+              frontCanvas.style.transition = `opacity ${FADE_DURATION}ms ease-in-out`;
+              frontCanvas.style.opacity = '0';
+              backCanvas.style.transition = 'none';
+              backCanvas.style.opacity = '1';
+            } else {
+              backCanvas.style.transition = `opacity ${FADE_DURATION}ms ease-in-out`;
+              backCanvas.style.opacity = '0';
+              frontCanvas.style.transition = 'none';
+              frontCanvas.style.opacity = '1';
+            }
+            showingFront = !showingFront;
+            scene = nextScene;
+            sweepIndex = 0;
+
+            phase = 'fade';
+            phaseStart = now;
+          } else {
+            // Next sweep, same scene
+            phaseStart = now;
+            lastRender = 0;
+          }
+        }
+
+      } else if (phase === 'fade') {
+        if (elapsed >= FADE_DURATION) {
+          phase = 'sweep';
+          phaseStart = now;
+          lastRender = 0;
+        }
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    // ─── Init ────────────────────────────────────────────
+
+    // Cursor auto-hide
+    let cursorTimer = null;
+    document.addEventListener('mousemove', () => {
+      document.body.style.cursor = 'pointer';
+      if (cursorTimer) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => { document.body.style.cursor = 'none'; }, 2000);
+    });
+
+    function skipToNext() {
+      // Jump to end of all sweeps → triggers crossfade
+      sweepIndex = 3;
+      phase = 'sweep';
+      phaseStart = performance.now() - SWEEP_DURATION;
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') window.close();
+      if (e.key === ' ') { e.preventDefault(); skipToNext(); }
+    });
+
+    document.addEventListener('click', skipToNext);
+
+    window.addEventListener('resize', () => {
+      if (scene) {
+        const t = Math.min((performance.now() - phaseStart) / SWEEP_DURATION, 1);
+        const { a, b } = getSweepValues(scene, sweepIndex, t);
+        const target = showingFront ? frontCanvas : backCanvas;
+        const targetCtx = showingFront ? frontCtx : backCtx;
+        renderScene(target, targetCtx, a, b, scene.pal, scene.seed, scene.depth);
+      }
+    });
+
+    startScene();
+    requestAnimationFrame(tick);
+  })();
+  </script>
+</body>
+</html>

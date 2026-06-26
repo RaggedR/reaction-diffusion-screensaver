@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Penrose Deflation — Kite & Dart Decomposition</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script>
+  (() => {
+    const PHI = (1 + Math.sqrt(5)) / 2;
+    const INVPHI = 1 / PHI;
+    const A36 = Math.PI / 5;
+    const SIN36 = Math.sin(A36);
+    const COS36 = Math.cos(A36);
+
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    function lerp(a, b, t) {
+      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    }
+    function dist(a, b) {
+      return Math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2);
+    }
+    function angleDeg(A, V, C) {
+      const v1 = [A[0]-V[0], A[1]-V[1]];
+      const v2 = [C[0]-V[0], C[1]-V[1]];
+      const dot = v1[0]*v2[0] + v1[1]*v2[1];
+      const mag = Math.sqrt(v1[0]**2+v1[1]**2) * Math.sqrt(v2[0]**2+v2[1]**2);
+      return Math.round(Math.acos(Math.max(-1, Math.min(1, dot/mag))) * 180 / Math.PI);
+    }
+    function centroid(...pts) {
+      const x = pts.reduce((s,p) => s+p[0], 0) / pts.length;
+      const y = pts.reduce((s,p) => s+p[1], 0) / pts.length;
+      return [x, y];
+    }
+
+    function drawPoly(pts, fill, stroke, lw) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.lineWidth = lw || 2; ctx.strokeStyle = stroke; ctx.stroke(); }
+    }
+
+    function drawTri(A, B, C, fill, stroke, lw) {
+      drawPoly([A, B, C], fill, stroke, lw);
+    }
+
+    function dashed(a, b, color, lw) {
+      ctx.beginPath(); ctx.setLineDash([6,4]);
+      ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]);
+      ctx.lineWidth = lw||1.5; ctx.strokeStyle = color; ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function txt(pos, text, color, size, ox, oy) {
+      ctx.fillStyle = color || '#fff';
+      ctx.font = `bold ${size||14}px monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(text, pos[0]+(ox||0), pos[1]+(oy||0));
+    }
+
+    function dot(pos, color, r) {
+      ctx.beginPath(); ctx.arc(pos[0], pos[1], r||4, 0, 2*Math.PI);
+      ctx.fillStyle = color||'#fff'; ctx.fill();
+    }
+
+    // Tile colors
+    const KITE_FILL = 'rgba(70, 150, 200, 0.35)';
+    const KITE_STROKE = '#4690C8';
+    const DART_FILL = 'rgba(200, 90, 90, 0.35)';
+    const DART_STROKE = '#C85A5A';
+
+    // Sub-tile colors (after decomposition)
+    const SUB_KITE = { fill: 'rgba(100, 200, 120, 0.45)', stroke: '#64C878' };
+    const SUB_DART = { fill: 'rgba(220, 140, 60, 0.45)', stroke: '#DC8C3C' };
+    const SUB_HALF_KITE = { fill: 'rgba(160, 100, 220, 0.45)', stroke: '#A064DC' };
+
+    function render() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth, h = window.innerHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.fillStyle = '#1a1a2e'; ctx.fillRect(0, 0, w, h);
+
+      // Layout: 4 panels in a 2×2 grid
+      // Top-left: original kite     Top-right: kite decomposed
+      // Bottom-left: original dart  Bottom-right: dart decomposed
+      const padX = w * 0.04, padY = h * 0.06;
+      const panelW = (w - 3*padX) / 2;
+      const panelH = (h - 3*padY) / 2;
+
+      // Scale tiles to fit panels
+      const L = Math.min(panelH * 0.7, panelW * 0.6);
+
+      // ═══════════════════════════════════════════════
+      // KITE (top row)
+      // ═══════════════════════════════════════════════
+
+      // -- Top-left: Original kite --
+      const kcx = padX + panelW * 0.5;
+      const kcy = padY + panelH * 0.45;
+
+      const kT  = [kcx, kcy - L*0.5];
+      const kB  = [kcx, kcy + L*0.5];
+      const kWL = [kcx - L*SIN36, kcy - L*0.5 + L*COS36];
+      const kWR = [kcx + L*SIN36, kcy - L*0.5 + L*COS36];
+
+      // Draw kite
+      drawPoly([kT, kWL, kB, kWR], KITE_FILL, KITE_STROKE, 3);
+      dashed(kT, kB, 'rgba(255,255,255,0.25)', 1);
+
+      txt(kT, 'T', '#fff', 14, 0, -14);
+      txt(kB, 'B', '#fff', 14, 0, 16);
+      txt(kWL, 'WL', '#fff', 14, -20, 0);
+      txt(kWR, 'WR', '#fff', 14, 20, 0);
+
+      // Angles
+      txt(kT, `${angleDeg(kWL,kT,kWR)}°`, '#ffd700', 11, 0, 14);
+      txt(kB, `${angleDeg(kWL,kB,kWR)}°`, '#ffd700', 11, 0, -12);
+      txt(kWL, `${angleDeg(kT,kWL,kB)}°`, '#ffd700', 11, 16, -10);
+      txt(kWR, `${angleDeg(kT,kWR,kB)}°`, '#ffd700', 11, -16, -10);
+
+      for (const v of [kT, kB, kWL, kWR]) dot(v);
+
+      txt([kcx, padY + 8], 'KITE (original)', 'rgba(255,255,255,0.7)', 14);
+
+
+      // -- Top-right: Kite decomposed --
+      const kcx2 = padX*2 + panelW * 1.5;
+      const kcy2 = padY + panelH * 0.45;
+
+      const kT2  = [kcx2, kcy2 - L*0.5];
+      const kB2  = [kcx2, kcy2 + L*0.5];
+      const kWL2 = [kcx2 - L*SIN36, kcy2 - L*0.5 + L*COS36];
+      const kWR2 = [kcx2 + L*SIN36, kcy2 - L*0.5 + L*COS36];
+
+      // Subdivision points
+      const kP  = lerp(kT2, kB2, INVPHI);
+      const kQ  = lerp(kT2, kWL2, INVPHI);
+      const kQp = lerp(kT2, kWR2, INVPHI);
+
+      // Sub-triangles
+      // Top kite halves (green)
+      drawTri(kT2, kQ, kP, SUB_KITE.fill, SUB_KITE.stroke, 1.5);
+      drawTri(kT2, kQp, kP, SUB_KITE.fill, SUB_KITE.stroke, 1.5);
+      // Dart halves (orange)
+      drawTri(kP, kQ, kB2, SUB_DART.fill, SUB_DART.stroke, 1.5);
+      drawTri(kP, kQp, kB2, SUB_DART.fill, SUB_DART.stroke, 1.5);
+      // Boundary half-kites (purple)
+      drawTri(kB2, kQ, kWL2, SUB_HALF_KITE.fill, SUB_HALF_KITE.stroke, 1.5);
+      drawTri(kB2, kQp, kWR2, SUB_HALF_KITE.fill, SUB_HALF_KITE.stroke, 1.5);
+
+      // Original outline
+      drawPoly([kT2, kWL2, kB2, kWR2], null, 'rgba(255,255,255,0.25)', 2);
+
+      // Vertices
+      for (const v of [kT2, kB2, kWL2, kWR2]) dot(v, '#fff', 4);
+      for (const v of [kP, kQ, kQp]) dot(v, '#ff0', 5);
+
+      txt(kT2, 'T', '#fff', 13, 0, -12);
+      txt(kB2, 'B', '#fff', 13, 0, 14);
+      txt(kWL2, 'WL', '#fff', 13, -18, 0);
+      txt(kWR2, 'WR', '#fff', 13, 18, 0);
+      txt(kP, 'P', '#ff0', 12, 12, 0);
+      txt(kQ, 'Q', '#ff0', 12, -12, -8);
+      txt(kQp, "Q'", '#ff0', 12, 12, -8);
+
+      // Angle labels inside each sub-triangle
+      const kTriangles = [
+        { name: 'GT', pts: [kT2, kQ, kP], color: SUB_KITE.stroke },
+        { name: 'GT', pts: [kT2, kQp, kP], color: SUB_KITE.stroke },
+        { name: 'GG', pts: [kP, kQ, kB2], color: SUB_DART.stroke },
+        { name: 'GG', pts: [kP, kQp, kB2], color: SUB_DART.stroke },
+        { name: 'GT', pts: [kB2, kQ, kWL2], color: SUB_HALF_KITE.stroke },
+        { name: 'GT', pts: [kB2, kQp, kWR2], color: SUB_HALF_KITE.stroke },
+      ];
+
+      for (const tri of kTriangles) {
+        const [A, B, C] = tri.pts;
+        const c = centroid(A, B, C);
+        const a1 = angleDeg(B, A, C);
+        const a2 = angleDeg(A, B, C);
+        const a3 = angleDeg(A, C, B);
+        txt(c, `${a1}°-${a2}°-${a3}°`, tri.color, 9, 0, 0);
+      }
+
+      txt([kcx2, padY + 8], 'KITE → 2 kites + 1 dart', 'rgba(255,255,255,0.7)', 14);
+
+      // Legend for kite
+      txt([kcx2, padY + panelH - 50], '● kite halves', SUB_KITE.stroke, 11, -80, 0);
+      txt([kcx2, padY + panelH - 50], '● dart halves', SUB_DART.stroke, 11, 10, 0);
+      txt([kcx2, padY + panelH - 50], '● ½kite (boundary)', SUB_HALF_KITE.stroke, 11, 120, 0);
+
+
+      // ═══════════════════════════════════════════════
+      // DART (bottom row)
+      // ═══════════════════════════════════════════════
+
+      // Dart geometry:
+      // C_d (top, 72°) — where two LONG edges meet
+      // B_d (right wing, 36°)
+      // A_d (concave, 216° reflex) — where two SHORT edges meet
+      // Bp_d (left wing, 36°)
+      //
+      // The axis runs C_d → A_d. |C_d A_d| = L/φ (short edge length).
+      // |C_d B_d| = |C_d Bp_d| = L (long edges).
+
+      // -- Bottom-left: Original dart --
+      const dcx = padX + panelW * 0.5;
+      const dcy = padY*2 + panelH * 1.45;
+
+      const dC  = [dcx, dcy - L*0.35];                          // top, 72°
+      const dBR = [dcx + L*SIN36, dcy - L*0.35 + L*COS36];     // right wing, 36°
+      const dBL = [dcx - L*SIN36, dcy - L*0.35 + L*COS36];     // left wing, 36°
+      const dA  = [dcx, dcy - L*0.35 + L*INVPHI];               // concave, 216°
+
+      // Draw dart (non-convex: C → BR → A → BL)
+      drawPoly([dC, dBR, dA, dBL], DART_FILL, DART_STROKE, 3);
+      dashed(dC, dA, 'rgba(255,255,255,0.25)', 1);
+
+      txt(dC, 'C', '#fff', 14, 0, -14);
+      txt(dA, 'A', '#fff', 14, 14, 0);
+      txt(dBL, 'BL', '#fff', 14, -20, 0);
+      txt(dBR, 'BR', '#fff', 14, 20, 0);
+
+      // Angles (for dart, angle at A is reflex — compute the non-reflex and subtract from 360)
+      const aCd = angleDeg(dBL, dC, dBR);
+      const aBR = angleDeg(dC, dBR, dA);
+      const aBL = angleDeg(dC, dBL, dA);
+      const aA_nonreflex = angleDeg(dBR, dA, dBL);
+      const aA_reflex = 360 - aA_nonreflex;
+
+      txt(dC, `${aCd}°`, '#ffd700', 11, 0, 14);
+      txt(dBR, `${aBR}°`, '#ffd700', 11, -16, -10);
+      txt(dBL, `${aBL}°`, '#ffd700', 11, 16, -10);
+      txt(dA, `${aA_reflex}°`, '#ffd700', 11, -16, 10);
+
+      for (const v of [dC, dA, dBL, dBR]) dot(v);
+
+      txt([dcx, padY*2 + panelH + 8], 'DART (original)', 'rgba(255,255,255,0.7)', 14);
+
+
+      // -- Bottom-right: Dart decomposed --
+      const dcx2 = padX*2 + panelW * 1.5;
+      const dcy2 = padY*2 + panelH * 1.45;
+
+      const dC2  = [dcx2, dcy2 - L*0.35];
+      const dBR2 = [dcx2 + L*SIN36, dcy2 - L*0.35 + L*COS36];
+      const dBL2 = [dcx2 - L*SIN36, dcy2 - L*0.35 + L*COS36];
+      const dA2  = [dcx2, dcy2 - L*0.35 + L*INVPHI];
+
+      // Two half-dart gnomons: GG(A, BR, C) and GG(A, BL, C)
+      // Deflation of GG(A, B, C):
+      //   R = lerp(B, C, 1/φ)
+      //   → GT(B, A, R), GG(R, A, C)
+
+      // Right gnomon GG(A2, BR2, C2):
+      const dR  = lerp(dBR2, dC2, INVPHI);  // R on edge BR→C
+
+      // Left gnomon GG(A2, BL2, C2):
+      const dRp = lerp(dBL2, dC2, INVPHI);  // R' on edge BL→C
+
+      // Children from right gnomon:
+      //   GT(BR2, A2, R)  — golden triangle (half-kite)
+      //   GG(R, A2, C2)   — golden gnomon (half-dart)
+      // Children from left gnomon:
+      //   GT(BL2, A2, R') — golden triangle (half-kite)
+      //   GG(R', A2, C2)  — golden gnomon (half-dart)
+
+      // The two GT's (BR2,A2,R) + (BL2,A2,R') should pair to form a kite
+      // The two GG's (R,A2,C2) + (R',A2,C2) should pair to form a dart
+
+      // Draw sub-triangles
+      // Kite halves (green): GT(BR, A, R) and GT(BL, A, R')
+      drawTri(dBR2, dA2, dR, SUB_KITE.fill, SUB_KITE.stroke, 1.5);
+      drawTri(dBL2, dA2, dRp, SUB_KITE.fill, SUB_KITE.stroke, 1.5);
+      // Dart halves (orange): GG(R, A, C) and GG(R', A, C)
+      drawTri(dR, dA2, dC2, SUB_DART.fill, SUB_DART.stroke, 1.5);
+      drawTri(dRp, dA2, dC2, SUB_DART.fill, SUB_DART.stroke, 1.5);
+
+      // Original dart outline
+      drawPoly([dC2, dBR2, dA2, dBL2], null, 'rgba(255,255,255,0.25)', 2);
+
+      // Vertices
+      for (const v of [dC2, dBR2, dBL2]) dot(v, '#fff', 4);
+      for (const v of [dA2, dR, dRp]) dot(v, '#ff0', 5);
+
+      txt(dC2, 'C', '#fff', 13, 0, -12);
+      txt(dBR2, 'BR', '#fff', 13, 18, 0);
+      txt(dBL2, 'BL', '#fff', 13, -18, 0);
+      txt(dA2, 'A', '#ff0', 12, 12, 8);
+      txt(dR, 'R', '#ff0', 12, 12, -8);
+      txt(dRp, "R'", '#ff0', 12, -14, -8);
+
+      // Angle labels inside each sub-triangle
+      const dTriangles = [
+        { name: 'GT', pts: [dBR2, dA2, dR], color: SUB_KITE.stroke },
+        { name: 'GT', pts: [dBL2, dA2, dRp], color: SUB_KITE.stroke },
+        { name: 'GG', pts: [dR, dA2, dC2], color: SUB_DART.stroke },
+        { name: 'GG', pts: [dRp, dA2, dC2], color: SUB_DART.stroke },
+      ];
+
+      for (const tri of dTriangles) {
+        const [A, B, C] = tri.pts;
+        const c = centroid(A, B, C);
+        const a1 = angleDeg(B, A, C);
+        const a2 = angleDeg(A, B, C);
+        const a3 = angleDeg(A, C, B);
+        txt(c, `${a1}°-${a2}°-${a3}°`, tri.color, 9, 0, 0);
+      }
+
+      txt([dcx2, padY*2 + panelH + 8], 'DART → 1 kite + 1 dart', 'rgba(255,255,255,0.7)', 14);
+
+      // Legend for dart
+      txt([dcx2, padY*2 + panelH*2 - 30], '● kite halves (GT 36-72-72)', SUB_KITE.stroke, 11, -60, 0);
+      txt([dcx2, padY*2 + panelH*2 - 30], '● dart halves (GG 108-36-36)', SUB_DART.stroke, 11, 120, 0);
+
+      // Title
+      txt([w/2, 20], 'Penrose P2 Deflation — Kite & Dart Decomposition', 'rgba(255,255,255,0.9)', 16);
+    }
+
+    window.addEventListener('resize', render);
+    render();
+  })();
+  </script>
+</body>
+</html>

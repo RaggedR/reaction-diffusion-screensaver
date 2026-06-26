@@ -54,8 +54,10 @@
     function makeKite(tip, axisAngle) {
       const A = tip;
       const B = addPt(A, [LONG * Math.cos(axisAngle + A36), LONG * Math.sin(axisAngle + A36)]);
-      const C = addPt(A, [LONG * Math.cos(axisAngle),        LONG * Math.sin(axisAngle)]);
       const D = addPt(A, [LONG * Math.cos(axisAngle - A36), LONG * Math.sin(axisAngle - A36)]);
+      // C is where the two SHORT edges from B and D meet, along the axis
+      const dist = LONG * Math.cos(A36) + SHORT * Math.cos(2 * A36);
+      const C = addPt(A, [dist * Math.cos(axisAngle), dist * Math.sin(axisAngle)]);
       return { type: 'kite', verts: [A, B, C, D] };
     }
 
