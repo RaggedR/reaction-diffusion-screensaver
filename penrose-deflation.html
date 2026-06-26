@@ -230,8 +230,8 @@
 
     // ─── Screensaver loop ────────────────────────────────
 
-    const SCENE_DURATION = 8000;  // ms per scene
-    const FADE_DURATION = 1200;   // ms crossfade
+    const SCENE_DURATION = 2500;  // ms per scene
+    const FADE_DURATION = 800;    // ms crossfade
 
     let scene = null;
     let phase = 'show';  // 'show' | 'fade'
@@ -246,7 +246,7 @@
         pal: palettes[palIdx],
         offsetX: (Math.random() - 0.5) * spread,
         offsetY: (Math.random() - 0.5) * spread,
-        depth: 6,
+        depth: 7,
       };
     }
 
