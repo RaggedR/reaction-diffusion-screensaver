@@ -3,397 +3,331 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Penrose Deflation — Debug</title>
+  <title>Penrose Tiling Screensaver</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #1a1a2e; overflow: hidden; }
-    canvas { display: block; }
-    #info {
-      position: fixed; top: 12px; left: 12px;
-      color: rgba(255,255,255,0.8);
-      font: 14px monospace; z-index: 2;
-    }
-    #controls {
-      position: fixed; top: 12px; right: 12px;
-      color: rgba(255,255,255,0.8);
-      font: 14px monospace; z-index: 2;
-    }
-    button {
-      background: #333; color: #fff; border: 1px solid #666;
-      padding: 6px 14px; margin: 4px; cursor: pointer; font: 14px monospace;
-    }
-    button:hover { background: #555; }
+    body { background: #000; overflow: hidden; cursor: none; }
+    canvas { position: absolute; top: 0; left: 0; }
+    #back { z-index: 0; }
+    #front { z-index: 1; }
   </style>
 </head>
 <body>
-  <canvas id="c"></canvas>
-  <div id="info"></div>
-  <div id="controls">
-    <button id="btnSub">Subdivide (Space)</button>
-    <button id="btnReset">Reset (R)</button>
-  </div>
+  <canvas id="back"></canvas>
+  <canvas id="front"></canvas>
   <script>
   (() => {
-    // P2 kite-dart Penrose tiling via Robinson triangle deflation.
-    //
-    // A kite (4-gon with angles 72°-72°-72°-144°) is split into
-    // two "half-kite" Robinson triangles along its axis of symmetry.
-    // A dart (4-gon with angles 36°-36°-36°-252°) is split into
-    // two "half-dart" Robinson triangles.
-    //
-    // Half-kite triangle: isoceles, apex angle = 36° at vertex A.
-    //   |AB| = |AC| = long side,  |BC| = short side.
-    //   Angles: A=36°, B=72°, C=72°.
-    //
-    // Half-dart triangle: isoceles, apex angle = 36° at vertex A.
-    //   BUT the shape is different: it's thinner.
-    //   Actually — half-dart has apex 108° at A? No.
-    //
-    // Let me be precise. The Robinson triangles for P2 are:
-    //
-    //   Type 1 ("acute" / half-kite):
-    //     Isoceles with angles 36°-72°-72°.
-    //     The 36° vertex is the apex (A). Long edges AB=AC, short base BC.
-    //     Ratio: AB/BC = φ.
-    //
-    //   Type 2 ("obtuse" / half-dart):
-    //     Isoceles with angles 108°-36°-36°.
-    //     The 108° vertex is the apex (A). Short edges AB=AC, long base BC.
-    //     Ratio: BC/AB = φ.
-    //
-    // Deflation rules (substitution):
-    //
-    //   Acute(A, B, C) [36°-72°-72°]:
-    //     P on AB such that |AP|/|AB| = 1/φ
-    //     Q on AC such that |AQ|/|AC| = 1/φ
-    //     → Acute(C, A, Q)  ... wait, that doesn't look right either.
-    //
-    // OK. I'll derive this from scratch using coordinates and verify numerically.
-    //
-    // Actually, the simplest known-correct source is the Python code on
-    // the Wikipedia "Penrose tiling" article. It uses:
-    //
-    //   def deflate(triangles):
-    //     result = []
-    //     for (color, A, B, C) in triangles:
-    //       if color == 0:  # thin half (acute Robinson, 36-72-72)
-    //         P = A + (B - A) / phi
-    //         result += [(0, C, P, B), (1, P, C, A)]
-    //       else:           # thick half (obtuse Robinson, 108-36-36)
-    //         Q = B + (A - B) / phi
-    //         R = B + (C - B) / phi
-    //         result += [(1, R, C, A), (1, Q, R, B), (0, R, Q, A)]
-    //     return result
-    //
-    // color 0 = "thin" (36-72-72, half-kite)   → 2 children
-    // color 1 = "thick" (108-36-36, half-dart)  → 3 children
-    //
-    // Wait — that's the OPPOSITE of what I expected. In the Wikipedia code,
-    // the half-kite produces 2 children and the half-dart produces 3?
-    //
-    // Actually I think the Wikipedia naming is different. Let me just
-    // use the code exactly and label by shape, not by name.
-    //
-    // Sun seed in this convention: the initial wheel of 10 triangles
-    // around the center must be color 0 (the type that produces 2 children).
+    // P2 kite-dart Penrose tiling screensaver.
+    // Direct port of jlieberherr/penrose-tilings deflation.
+    // Robinson triangles with shape (A=acute, O=obtuse) and
+    // side (F=front, B=back). Rotation-based subdivision.
 
-    const PHI = (1 + Math.sqrt(5)) / 2;
-    const INVPHI = 1 / PHI;
+    const frontCanvas = document.getElementById('front');
+    const backCanvas = document.getElementById('back');
+    const frontCtx = frontCanvas.getContext('2d');
+    const backCtx = backCanvas.getContext('2d');
 
-    const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
+    // ─── Complementary colour palettes ─────────────────────
 
-    const DEPTH = 9;
-    const EXTRA_RINGS = 2;  // extra deflation levels for oversizing
-    const TILE_DEPTH = 4;   // deflation levels for tile granularity
-    let depth = 0;
-    let tris = [];
+    const palettes = [
+      { // Teal & Coral
+        bg: '#080c0c',
+        kite: { base: '#3a9090', edge: '#1a4848' },
+        dart: { base: '#c06050', edge: '#603028' },
+      },
+      { // Blue & Orange
+        bg: '#08080c',
+        kite: { base: '#4070b0', edge: '#1a3058' },
+        dart: { base: '#c88030', edge: '#644018' },
+      },
+      { // Purple & Gold
+        bg: '#0a080c',
+        kite: { base: '#7050a0', edge: '#382850' },
+        dart: { base: '#b8a030', edge: '#5c5018' },
+      },
+      { // Green & Rose
+        bg: '#080c08',
+        kite: { base: '#408860', edge: '#204430' },
+        dart: { base: '#c06878', edge: '#60343c' },
+      },
+      { // Indigo & Amber
+        bg: '#080810',
+        kite: { base: '#4848a0', edge: '#242450' },
+        dart: { base: '#d0a040', edge: '#685020' },
+      },
+      { // Forest & Peach
+        bg: '#080a08',
+        kite: { base: '#306848', edge: '#183424' },
+        dart: { base: '#d89070', edge: '#6c4838' },
+      },
+      { // Slate & Salmon
+        bg: '#0a0a0c',
+        kite: { base: '#506878', edge: '#28343c' },
+        dart: { base: '#d07060', edge: '#683830' },
+      },
+      { // Emerald & Magenta
+        bg: '#080c0a',
+        kite: { base: '#30906a', edge: '#184835' },
+        dart: { base: '#b04888', edge: '#582444' },
+      },
+    ];
 
-    function lerp(a, b, t) {
-      return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    // ─── Geometry ────────────────────────────────────────
+
+    function rot(px, py, ox, oy, deg) {
+      const r = deg * Math.PI / 180;
+      const c = Math.cos(r), s = Math.sin(r);
+      const dx = px - ox, dy = py - oy;
+      return [ox + dx * c - dy * s, oy + dx * s + dy * c];
     }
 
-    // P2 kite-dart deflation (Robinson triangle substitution).
+    function tri(shape, side, A, B) {
+      const ang = shape === 'A' ? 36 : 108;
+      const C = rot(B[0], B[1], A[0], A[1], ang);
+      return { shape, side, A, B, C };
+    }
+
+    function vkey(v) {
+      return `${Math.round(v[0] * 100)},${Math.round(v[1] * 100)}`;
+    }
+
+    function ekey(a, b) {
+      const ka = vkey(a), kb = vkey(b);
+      return ka < kb ? ka + '|' + kb : kb + '|' + ka;
+    }
+
+    // ─── P2 Deflation (jlieberherr) ─────────────────────
     //
-    // GT = color 0 = half-kite (36°-72°-72°), A is the 36° apex.
-    // GG = color 1 = half-dart (108°-36°-36°), A is the 108° apex.
+    // Acute (A) = half-kite (36°-72°-72°), A is 36° apex
+    // Obtuse (O) = half-dart (108°-36°-36°), A is 108° apex
+    // C = rotate(B, A, 36°) for acute, rotate(B, A, 108°) for obtuse
     //
-    // GT(A, B, C) — 3 children:
-    //   P on AC at 1/φ from A,  Q on AB at 1/φ from A
-    //   → GT(A, Q, P),  GG(P, Q, C),  GT(C, Q, B)
-    //   Key: gnomon gets apex P (on axis) + vertex C (on axis),
-    //   so mirror gnomons share edge P→C → proper concave dart.
-    //
-    // GG(A, B, C) — 2 children:
-    //   R on BC at 1/φ from B
-    //   → GT(B, A, R),  GG(R, A, C)
-    //
-    // Kite = 2 GT → 4GT + 2GG = 2 kites + 1 dart  ✓
-    // Dart = 2 GG → 2GT + 2GG = 1 kite + 1 dart   ✓
-    // K/D ratio → φ                                 ✓
-    //
+    // Common side (axis hidden between paired halves):
+    //   Front → A-B,  Back → A-C
+
     function deflate(triangles) {
       const result = [];
-      for (const [color, A, B, C] of triangles) {
-        if (color === 0) {
-          // Golden triangle (half-kite): A=36° apex
-          const P = lerp(A, C, INVPHI);
-          const Q = lerp(A, B, INVPHI);
-          result.push([0, A, Q, P]);
-          result.push([1, P, Q, C]);
-          result.push([0, C, Q, B]);
+      for (const t of triangles) {
+        const { shape, side, A, B, C } = t;
+        if (shape === 'A') {
+          if (side === 'F') {
+            const P = rot(B[0], B[1], C[0], C[1], -36);
+            const Q = rot(B[0], B[1], C[0], C[1], -72);
+            result.push(tri('O', 'F', Q, A));
+            result.push(tri('A', 'B', C, Q));
+            result.push(tri('A', 'F', C, P));
+          } else {
+            const P = rot(C[0], C[1], B[0], B[1], 36);
+            const Q = rot(C[0], C[1], B[0], B[1], 72);
+            result.push(tri('O', 'B', Q, P));
+            result.push(tri('A', 'F', B, P));
+            result.push(tri('A', 'B', B, C));
+          }
         } else {
-          // Golden gnomon (half-dart): A=108° apex
-          const R = lerp(B, C, INVPHI);
-          result.push([0, B, A, R]);
-          result.push([1, R, A, C]);
+          if (side === 'F') {
+            const D = rot(A[0], A[1], B[0], B[1], -36);
+            result.push(tri('A', 'B', B, D));
+            result.push(tri('O', 'F', D, C));
+          } else {
+            const D = rot(A[0], A[1], C[0], C[1], 36);
+            result.push(tri('A', 'F', C, A));
+            result.push(tri('O', 'B', D, A));
+          }
         }
       }
       return result;
     }
 
-    function makeSunSeed(cx, cy, scale) {
-      // Sun seed: 5 kites around center. scale=1 fits the viewport;
-      // use scale > 1 to over-generate so boundary orphans fall outside.
-      const w = window.innerWidth, h = window.innerHeight;
-      const L = Math.min(w, h) * 0.45 * (scale || 1);
+    // ─── Sun seed (5 kites around center) ────────────────
 
+    function makeSunSeed(cx, cy, radius) {
       const tris = [];
-      const A36 = Math.PI / 5;
       for (let i = 0; i < 5; i++) {
-        const angle = (2 * Math.PI * i) / 5 - Math.PI / 2;
-        const T = [cx, cy];
-        const WL = [cx + L * Math.cos(angle - A36), cy + L * Math.sin(angle - A36)];
-        const WR = [cx + L * Math.cos(angle + A36), cy + L * Math.sin(angle + A36)];
-        const B  = [cx + L * Math.cos(angle), cy + L * Math.sin(angle)];
-        tris.push([0, T, WL, B]);
-        tris.push([0, T, WR, B]);
+        const deg = i * 72 - 90;
+        const rad = deg * Math.PI / 180;
+        const Bf = [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)];
+        // Front half-kite: A=center, B=Bf, axis=A-B
+        tris.push(tri('A', 'F', [cx, cy], Bf));
+        // Back half-kite: A=center, B=rotate(Bf, center, -36°), axis=A-C=A-Bf
+        const Bb = rot(Bf[0], Bf[1], cx, cy, -36);
+        tris.push(tri('A', 'B', [cx, cy], Bb));
       }
       return tris;
     }
 
-    const KITE_FILL = 'rgba(70, 130, 180, 0.6)';
-    const KITE_STROKE = '#4682B4';
-    const DART_FILL = 'rgba(205, 92, 92, 0.6)';
-    const DART_STROKE = '#CD5C5C';
-    const HALF_FILL = { 0: 'rgba(70, 130, 180, 0.3)', 1: 'rgba(205, 92, 92, 0.3)' };
+    // ─── Full scene render ───────────────────────────────
 
-    // Round coords to a key string for matching partners
-    function vkey(v) {
-      return `${Math.round(v[0]*100)},${Math.round(v[1]*100)}`;
-    }
-
-    // Pair half-tiles into complete kites and darts.
-    // Two same-color triangles form a tile when they share an edge
-    // through their A vertex (the apex): either A→C or A→B.
-    // At the shared edge: 36°+36°=72° (GT→kite) or 108°+108°=216° (GG→dart).
-    function buildTiles(triangles) {
-      // Register each triangle under two keys: (color, A, C) and (color, A, B)
-      // Both are valid "axis" edges for pairing.
-      const edgeMap = {};  // key → [index, ...]
-
-      for (let i = 0; i < triangles.length; i++) {
-        const [color, A, B, C] = triangles[i];
-        // Key = unordered pair including A
-        const kAC = color + '|' + vkey(A) + '|' + vkey(C);
-        const kCA = color + '|' + vkey(C) + '|' + vkey(A);
-        const kAB = color + '|' + vkey(A) + '|' + vkey(B);
-        const kBA = color + '|' + vkey(B) + '|' + vkey(A);
-
-        // Register A→C edge
-        const acKey = edgeMap[kAC] ? kAC : edgeMap[kCA] ? kCA : kAC;
-        if (!edgeMap[acKey]) edgeMap[acKey] = [];
-        edgeMap[acKey].push(i);
-
-        // Register A→B edge
-        const abKey = edgeMap[kAB] ? kAB : edgeMap[kBA] ? kBA : kAB;
-        if (!edgeMap[abKey]) edgeMap[abKey] = [];
-        edgeMap[abKey].push(i);
-      }
-
-      const paired = new Set();
-      const tiles = [];
-
-      for (const indices of Object.values(edgeMap)) {
-        if (indices.length !== 2) continue;
-        const [i, j] = indices;
-        if (paired.has(i) || paired.has(j)) continue;
-
-        const [c, A1, B1, C1] = triangles[i];
-        const [, A2, B2, C2] = triangles[j];
-
-        // Find shared and non-shared vertices
-        const all1 = [A1, B1, C1];
-        const all2 = [A2, B2, C2];
-        const shared = [], unshared = [];
-        for (let k = 0; k < 3; k++) {
-          const match = all2.findIndex(v => vkey(v) === vkey(all1[k]));
-          if (match >= 0) {
-            shared.push(all1[k]);
-          } else {
-            unshared.push(all1[k]);
-          }
-        }
-        for (let k = 0; k < 3; k++) {
-          if (!shared.some(v => vkey(v) === vkey(all2[k]))) {
-            unshared.push(all2[k]);
-          }
-        }
-
-        if (shared.length !== 2 || unshared.length !== 2) continue;
-
-        paired.add(i);
-        paired.add(j);
-        tiles.push({
-          type: c === 0 ? 'kite' : 'dart',
-          verts: [shared[0], unshared[0], shared[1], unshared[1]],
-          color: c
-        });
-      }
-
-      const orphans = triangles.filter((_, i) => !paired.has(i));
-      return { tiles, orphans };
-    }
-
-    function render() {
+    function renderScene(cvs, ctx, pal, offsetX, offsetY, depth) {
       const dpr = window.devicePixelRatio || 1;
       const w = window.innerWidth, h = window.innerHeight;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      canvas.style.width = w + 'px';
-      canvas.style.height = h + 'px';
+      cvs.width = w * dpr; cvs.height = h * dpr;
+      cvs.style.width = w + 'px'; cvs.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      ctx.fillStyle = '#1a1a2e';
+      ctx.fillStyle = pal.bg;
       ctx.fillRect(0, 0, w, h);
 
-      const { tiles, orphans } = buildTiles(tris);
+      const cx = w / 2 + offsetX;
+      const cy = h / 2 + offsetY;
+      // Radius must reach every screen corner from the offset center
+      const radius = Math.max(
+        Math.hypot(cx, cy),
+        Math.hypot(w - cx, cy),
+        Math.hypot(cx, h - cy),
+        Math.hypot(w - cx, h - cy),
+      ) * 1.05;
+      let tris = makeSunSeed(cx, cy, radius);
+      for (let d = 0; d < depth; d++) {
+        tris = deflate(tris);
+      }
 
-      // Only draw tiles that overlap the viewport
-      const margin = 50;
-      function isVisible(verts) {
-        for (const v of verts) {
+      const margin = 60;
+      function isVis(t) {
+        for (const v of [t.A, t.B, t.C]) {
           if (v[0] > -margin && v[0] < w + margin &&
               v[1] > -margin && v[1] < h + margin) return true;
         }
         return false;
       }
 
-      // Draw complete tiles as quadrilaterals
-      let visKites = 0, visDarts = 0;
-      for (const { type, verts } of tiles) {
-        if (!isVisible(verts)) continue;
-        const [v0, v1, v2, v3] = verts;
+      // Pass 1: flat fill each half-tile
+      for (const t of tris) {
+        if (!isVis(t)) continue;
         ctx.beginPath();
-        ctx.moveTo(v0[0], v0[1]);
-        ctx.lineTo(v1[0], v1[1]);
-        ctx.lineTo(v2[0], v2[1]);
-        ctx.lineTo(v3[0], v3[1]);
+        ctx.moveTo(t.A[0], t.A[1]);
+        ctx.lineTo(t.B[0], t.B[1]);
+        ctx.lineTo(t.C[0], t.C[1]);
         ctx.closePath();
-        ctx.fillStyle = type === 'kite' ? KITE_FILL : DART_FILL;
+        ctx.fillStyle = (t.shape === 'A' ? pal.kite : pal.dart).base;
         ctx.fill();
-        ctx.lineWidth = 1.5;
-        ctx.strokeStyle = type === 'kite' ? KITE_STROKE : DART_STROKE;
-        ctx.stroke();
-        if (type === 'kite') visKites++; else visDarts++;
       }
 
-      // Don't draw orphans — they're boundary artifacts outside viewport
-
-      document.getElementById('info').innerHTML =
-        `Depth: ${depth} | ` +
-        `<span style="color:${KITE_STROKE}">Kites: ${visKites}</span> ` +
-        `<span style="color:${DART_STROKE}">Darts: ${visDarts}</span>`;
-    }
-
-    function reset() {
-      const w = window.innerWidth, h = window.innerHeight;
-      depth = 0;
-      // Scale sun by φ^EXTRA_RINGS beyond what TILE_DEPTH needs,
-      // so orphans are pushed well outside the viewport.
-      const totalDepth = EXTRA_RINGS + TILE_DEPTH;
-      const scale = Math.pow(PHI, EXTRA_RINGS);
-      tris = makeSunSeed(w / 2, h / 2, scale);
-      for (let i = 0; i < totalDepth; i++) {
-        tris = deflate(tris);
-        depth++;
-      }
-      render();
-    }
-
-    function step() {
-      // Pick a random visible tile and deflate just that one.
-      // A "tile" is a pair of same-axis triangles. We deflate both halves
-      // and replace them in the array.
-      const w = window.innerWidth, h = window.innerHeight;
-      const margin = 50;
-
-      // Find candidate triangle indices (visible ones)
-      const visible = [];
-      for (let i = 0; i < tris.length; i++) {
-        const [, A, B, C] = tris[i];
-        const mx = (A[0] + B[0] + C[0]) / 3;
-        const my = (A[1] + B[1] + C[1]) / 3;
-        if (mx > -margin && mx < w + margin &&
-            my > -margin && my < h + margin) {
-          visible.push(i);
-        }
-      }
-      if (visible.length === 0) return;
-
-      // Pick a random visible triangle
-      const pick = visible[Math.floor(Math.random() * visible.length)];
-      const chosen = tris[pick];
-
-      // Find its partner (same color, shared A→C or A→B edge)
-      const [color, A, B, C] = chosen;
-      let partnerIdx = -1;
-      for (let i = 0; i < tris.length; i++) {
-        if (i === pick) continue;
-        const [c2, A2, B2, C2] = tris[i];
-        if (c2 !== color) continue;
-        // Check if they share an A-edge
-        if ((vkey(A) === vkey(A2) && vkey(C) === vkey(C2)) ||
-            (vkey(A) === vkey(A2) && vkey(B) === vkey(B2)) ||
-            (vkey(A) === vkey(A2) && vkey(C) === vkey(B2)) ||
-            (vkey(A) === vkey(A2) && vkey(B) === vkey(C2)) ||
-            (vkey(C) === vkey(A2) && vkey(A) === vkey(C2)) ||
-            (vkey(C) === vkey(A2) && vkey(A) === vkey(B2)) ||
-            (vkey(B) === vkey(A2) && vkey(A) === vkey(C2)) ||
-            (vkey(B) === vkey(A2) && vkey(A) === vkey(B2))) {
-          partnerIdx = i;
-          break;
+      // Pass 2: classify edges for tile outlines.
+      // Common side (axis): Front → A-B, Back → A-C
+      const edgeInfo = {};
+      for (const t of tris) {
+        if (!isVis(t)) continue;
+        const axisEdge = t.side === 'F' ? [t.A, t.B] : [t.A, t.C];
+        const axisKey = ekey(axisEdge[0], axisEdge[1]);
+        for (const [p, q] of [[t.A, t.B], [t.A, t.C], [t.B, t.C]]) {
+          const k = ekey(p, q);
+          if (!edgeInfo[k]) edgeInfo[k] = { isAxis: 0, verts: [p, q] };
+          if (k === axisKey) edgeInfo[k].isAxis++;
         }
       }
 
-      // Deflate the chosen triangle (and partner if found)
-      const toDeflate = [pick];
-      if (partnerIdx >= 0) toDeflate.push(partnerIdx);
-
-      // Remove old triangles (highest index first to preserve indices)
-      toDeflate.sort((a, b) => b - a);
-      const removed = toDeflate.map(i => tris[i]);
-      for (const i of toDeflate) tris.splice(i, 1);
-
-      // Add deflated children
-      for (const tri of removed) {
-        const children = deflate([tri]);
-        tris.push(...children);
+      // Pass 3: draw tile boundary edges only
+      ctx.lineWidth = 0.8;
+      ctx.strokeStyle = pal.kite.edge;
+      ctx.beginPath();
+      for (const { isAxis, verts: [p, q] } of Object.values(edgeInfo)) {
+        if (isAxis >= 2) continue;
+        ctx.moveTo(p[0], p[1]);
+        ctx.lineTo(q[0], q[1]);
       }
-
-      depth = '~';
-      render();
+      ctx.stroke();
     }
 
-    document.getElementById('btnSub').addEventListener('click', step);
-    document.getElementById('btnReset').addEventListener('click', reset);
-    document.addEventListener('keydown', e => {
-      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); step(); }
-      if (e.key === 'r' || e.key === 'R') reset();
+    // ─── Screensaver loop ────────────────────────────────
+
+    const SCENE_DURATION = 8000;  // ms per scene
+    const FADE_DURATION = 1200;   // ms crossfade
+
+    let scene = null;
+    let phase = 'show';  // 'show' | 'fade'
+    let phaseStart = 0;
+    let showingFront = true;
+    function pickScene() {
+      const palIdx = Math.floor(Math.random() * palettes.length);
+      // Large random offset — each scene shows a different region of the tiling
+      const w = window.innerWidth, h = window.innerHeight;
+      const spread = Math.max(w, h) * 1.5;
+      return {
+        pal: palettes[palIdx],
+        offsetX: (Math.random() - 0.5) * spread,
+        offsetY: (Math.random() - 0.5) * spread,
+        depth: 6,
+      };
+    }
+
+    function startScene() {
+      scene = pickScene();
+      phase = 'show';
+      phaseStart = performance.now();
+      renderScene(frontCanvas, frontCtx, scene.pal, scene.offsetX, scene.offsetY, scene.depth);
+      frontCanvas.style.opacity = '1';
+      showingFront = true;
+    }
+
+    function tick(now) {
+      const elapsed = now - phaseStart;
+
+      if (phase === 'show') {
+        if (elapsed >= SCENE_DURATION) {
+          // Start crossfade to next scene
+          const nextScene = pickScene();
+          const backTarget = showingFront ? backCanvas : frontCanvas;
+          const backTargetCtx = showingFront ? backCtx : frontCtx;
+          renderScene(backTarget, backTargetCtx, nextScene.pal, nextScene.offsetX, nextScene.offsetY, nextScene.depth);
+
+          if (showingFront) {
+            frontCanvas.style.transition = `opacity ${FADE_DURATION}ms ease-in-out`;
+            frontCanvas.style.opacity = '0';
+            backCanvas.style.transition = 'none';
+            backCanvas.style.opacity = '1';
+          } else {
+            backCanvas.style.transition = `opacity ${FADE_DURATION}ms ease-in-out`;
+            backCanvas.style.opacity = '0';
+            frontCanvas.style.transition = 'none';
+            frontCanvas.style.opacity = '1';
+          }
+          showingFront = !showingFront;
+          scene = nextScene;
+          phase = 'fade';
+          phaseStart = now;
+        }
+      } else if (phase === 'fade') {
+        if (elapsed >= FADE_DURATION) {
+          phase = 'show';
+          phaseStart = now;
+        }
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    // ─── Input ───────────────────────────────────────────
+
+    let cursorTimer = null;
+    document.addEventListener('mousemove', () => {
+      document.body.style.cursor = 'pointer';
+      if (cursorTimer) clearTimeout(cursorTimer);
+      cursorTimer = setTimeout(() => { document.body.style.cursor = 'none'; }, 2000);
     });
-    window.addEventListener('resize', render);
 
-    reset();
+    function skipToNext() {
+      phase = 'show';
+      phaseStart = performance.now() - SCENE_DURATION;
+    }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') window.close();
+      if (e.key === ' ') { e.preventDefault(); skipToNext(); }
+    });
+    document.addEventListener('click', skipToNext);
+
+    window.addEventListener('resize', () => {
+      if (scene) {
+        const target = showingFront ? frontCanvas : backCanvas;
+        const targetCtx = showingFront ? frontCtx : backCtx;
+        renderScene(target, targetCtx, scene.pal, scene.offsetX, scene.offsetY, scene.depth);
+      }
+    });
+
+    // ─── Init ────────────────────────────────────────────
+
+    startScene();
+    requestAnimationFrame(tick);
   })();
   </script>
 </body>
