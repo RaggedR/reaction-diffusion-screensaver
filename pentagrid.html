@@ -29,7 +29,7 @@
   <canvas id="c"></canvas>
   <div id="info"></div>
   <div id="status"></div>
-  <div id="help">hover flippable tiles · click to flip · Z undo · R reset · F toggle highlights · Space toggle edges</div>
+  <div id="help">hover flippable tiles · click to flip · Z undo · R reset · F toggle highlights · V vertex sums · Space toggle edges</div>
   <script>
   (() => {
     const canvas = document.getElementById('c');
@@ -66,6 +66,8 @@
     let showOutlines = true;
     let flashTime = 0;
     let flashCenter = null;
+    let showVertexSums = false;
+    let lastValidation = null;
 
     // ─── Vertex snapping ─────────────────────────────
 
@@ -270,6 +272,58 @@
       }
     }
 
+    // ─── Tiling validation ────────────────────────────
+    //
+    // Check that the de Bruijn index sum Σ K_l ∈ {1,2,3,4}
+    // at every vertex, and that all tiles agree on the sum
+    // at shared vertices. If either check fails, the tiling
+    // is NOT a valid Penrose tiling.
+
+    function validateTiling() {
+      const vertData = new Map(); // key → { sum, I, x, y, tileCount }
+      let inconsistencies = 0;
+      let outOfRange = 0;
+
+      for (let ti = 0; ti < tiles.length; ti++) {
+        const t = tiles[ti];
+        for (let ci = 0; ci < 4; ci++) {
+          const key = vsnap(t.verts[ci][0], t.verts[ci][1]);
+
+          // Compute I at this corner
+          const I_ci = t.I.slice();
+          if (ci === 1 || ci === 2) I_ci[t.j] += 1;
+          if (ci === 2 || ci === 3) I_ci[t.k] += 1;
+          const sum = I_ci.reduce((a, b) => a + b, 0);
+
+          if (vertData.has(key)) {
+            const existing = vertData.get(key);
+            existing.tileCount++;
+            if (existing.sum !== sum) {
+              inconsistencies++;
+              existing.inconsistent = true;
+            }
+          } else {
+            vertData.set(key, {
+              sum, x: t.verts[ci][0], y: t.verts[ci][1],
+              tileCount: 1, inconsistent: false,
+            });
+          }
+        }
+      }
+
+      for (const [, d] of vertData) {
+        if (d.sum < 1 || d.sum > 4) outOfRange++;
+      }
+
+      return {
+        valid: inconsistencies === 0 && outOfRange === 0,
+        inconsistencies,
+        outOfRange,
+        total: vertData.size,
+        vertData,
+      };
+    }
+
     // ─── Flip execution ──────────────────────────────
 
     function executeFlip(flipIdx) {
@@ -361,6 +415,7 @@
 
       buildAdjacency();
       detectFlips();
+      lastValidation = validateTiling();
     }
 
     function undo() {
@@ -369,6 +424,7 @@
       flipCount = Math.max(0, flipCount - 1);
       buildAdjacency();
       detectFlips();
+      lastValidation = validateTiling();
     }
 
     // ─── Hit testing ─────────────────────────────────
@@ -504,6 +560,22 @@
         ctx.stroke();
       }
 
+      // Pass 5: vertex index sums
+      if (showVertexSums && lastValidation) {
+        const sumColors = {
+          1: '#44cc44', 2: '#44aacc', 3: '#ccaa44', 4: '#cc6644',
+        };
+        for (const [, d] of lastValidation.vertData) {
+          const color = d.inconsistent ? '#ff0000' :
+            (d.sum < 1 || d.sum > 4) ? '#ff00ff' :
+            sumColors[d.sum] || '#ffffff';
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, 3, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      }
+
       // Flash
       if (flashTime > 0 && flashCenter) {
         const elapsed = Date.now() - flashTime;
@@ -529,9 +601,16 @@
 
     function updateInfo() {
       const nThick = tiles.reduce((n, t) => n + (t.type === 'thick' ? 1 : 0), 0);
-      infoEl.textContent =
-        `${tiles.length} rhombi (${nThick} thick + ${tiles.length - nThick} thin) · ` +
+      let text = `${tiles.length} rhombi (${nThick} thick + ${tiles.length - nThick} thin) · ` +
         `${flipSites.length} flippable · ${flipCount} flips`;
+      if (lastValidation) {
+        if (lastValidation.valid) {
+          text += ` · VALID`;
+        } else {
+          text += ` · INVALID (${lastValidation.inconsistencies} inconsistent, ${lastValidation.outOfRange} out of range)`;
+        }
+      }
+      infoEl.textContent = text;
       statusEl.textContent = hoveredFlip >= 0 ? 'click to flip' : '';
     }
 
@@ -569,6 +648,10 @@
         showFlips = !showFlips;
         hoveredFlip = -1;
         render();
+      } else if (e.key === 'v' || e.key === 'V') {
+        showVertexSums = !showVertexSums;
+        if (showVertexSums && !lastValidation) lastValidation = validateTiling();
+        render();
       } else if (e.key === ' ') {
         e.preventDefault();
         showOutlines = !showOutlines;
@@ -582,6 +665,7 @@
       generateTiling();
       buildAdjacency();
       detectFlips();
+      lastValidation = validateTiling();
       undoStack = [];
       flipCount = 0;
       hoveredFlip = -1;
