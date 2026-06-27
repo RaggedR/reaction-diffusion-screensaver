@@ -52,6 +52,7 @@
     // ─── Grid state (needed for flip validation) ─────
 
     let gridE = [];           // direction vectors e[0..4]
+    let gridCenter = [0, 0];  // viewport center used during generation
 
     // ─── State ───────────────────────────────────────
 
@@ -67,9 +68,16 @@
     let flashTime = 0;
     let flashCenter = null;
     let showVertexSums = false;
-    let showArcs = true;
+    let showArcs = false;
     let lastValidation = null;
     const PHI = (1 + Math.sqrt(5)) / 2;
+    const familyColors = [
+      'rgba(230, 90, 90, 0.9)',   // 0: red
+      'rgba(90, 200, 90, 0.9)',   // 1: green
+      'rgba(80, 130, 230, 0.9)',  // 2: blue
+      'rgba(230, 190, 50, 0.9)',  // 3: gold
+      'rgba(190, 90, 230, 0.9)',  // 4: purple
+    ];
 
     // ─── Vertex snapping ─────────────────────────────
 
@@ -87,6 +95,7 @@
     function generateTiling() {
       const w = window.innerWidth, h = window.innerHeight;
       const cx = w / 2, cy = h / 2;
+      gridCenter = [cx, cy];
       const rot = Math.random() * 2 * Math.PI;
 
       gridE = [];
@@ -282,7 +291,7 @@
     // is NOT a valid Penrose tiling.
 
     function validateTiling() {
-      const vertData = new Map(); // key → { sum, I, x, y, tileCount }
+      const vertData = new Map(); // key → { I, sum, x, y, tileCount }
       let inconsistencies = 0;
       let outOfRange = 0;
 
@@ -300,27 +309,41 @@
           if (vertData.has(key)) {
             const existing = vertData.get(key);
             existing.tileCount++;
-            if (existing.sum !== sum) {
-              inconsistencies++;
-              existing.inconsistent = true;
+            // Check INDIVIDUAL I values, not just the sum
+            for (let l = 0; l < 5; l++) {
+              if (existing.I[l] !== I_ci[l]) {
+                inconsistencies++;
+                existing.inconsistent = true;
+                break;
+              }
             }
           } else {
             vertData.set(key, {
-              sum, x: t.verts[ci][0], y: t.verts[ci][1],
+              I: I_ci, sum, x: t.verts[ci][0], y: t.verts[ci][1],
               tileCount: 1, inconsistent: false,
             });
           }
         }
       }
 
+      let positionErrors = 0;
       for (const [, d] of vertData) {
         if (d.sum < 1 || d.sum > 4) outOfRange++;
+        // Check that vertex position matches V = SZ · Σ K_l · e_l + center
+        let px = gridCenter[0], py = gridCenter[1];
+        for (let l = 0; l < 5; l++) {
+          px += d.I[l] * gridE[l][0] * SZ;
+          py += d.I[l] * gridE[l][1] * SZ;
+        }
+        const dist = Math.hypot(px - d.x, py - d.y);
+        if (dist > 0.5) positionErrors++;
       }
 
       return {
-        valid: inconsistencies === 0 && outOfRange === 0,
+        valid: inconsistencies === 0 && outOfRange === 0 && positionErrors === 0,
         inconsistencies,
         outOfRange,
+        positionErrors,
         total: vertData.size,
         vertData,
       };
@@ -475,20 +498,6 @@
       return boundary;
     }
 
-    // ─── Arc helper ────────────────────────────────────
-
-    function arcAtVertex(center, ptA, ptB, radius) {
-      const angA = Math.atan2(ptA[1] - center[1], ptA[0] - center[0]);
-      const angB = Math.atan2(ptB[1] - center[1], ptB[0] - center[0]);
-      // Sweep through the interior (shorter) angle
-      const ccw = ((angB - angA) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-      ctx.moveTo(
-        center[0] + radius * Math.cos(angA),
-        center[1] + radius * Math.sin(angA),
-      );
-      ctx.arc(center[0], center[1], radius, angA, angB, ccw > Math.PI);
-    }
-
     // ─── Rendering ───────────────────────────────────
 
     function render() {
@@ -592,48 +601,27 @@
         }
       }
 
-      // Pass 6: Penrose arcs
-      // In a valid Penrose tiling, arcs at acute vertices form continuous
-      // curves across tile boundaries. Broken arcs = invalid tiling.
+      // Pass 6: Family-colored edges
+      // Each edge belongs to one of 5 pentagrid families.
+      // Adjacent tiles always agree on the family → consistent
+      // coloring proves the matching rules are satisfied.
       if (showArcs) {
-        const r1 = SZ / PHI;    // radius at thick 72° vertices
-        const r2 = SZ / (PHI * PHI);  // radius at thin 36° vertices
-
-        // Family 1 (gold): arcs at acute vertices
-        ctx.strokeStyle = 'rgba(240, 200, 100, 0.7)';
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
+        ctx.lineWidth = 2;
         for (const t of tiles) {
           const v = t.verts;
-          if (t.type === 'thick') {
-            // Arcs at v0 and v2 (72° acute vertices)
-            arcAtVertex(v[0], v[1], v[3], r1);
-            arcAtVertex(v[2], v[3], v[1], r1);
-          } else {
-            // Arcs at v1 and v3 (36° acute vertices)
-            arcAtVertex(v[1], v[2], v[0], r2);
-            arcAtVertex(v[3], v[0], v[2], r2);
-          }
+          // j-edges: v0→v1 and v3→v2
+          ctx.strokeStyle = familyColors[t.j];
+          ctx.beginPath();
+          ctx.moveTo(v[0][0], v[0][1]); ctx.lineTo(v[1][0], v[1][1]);
+          ctx.moveTo(v[3][0], v[3][1]); ctx.lineTo(v[2][0], v[2][1]);
+          ctx.stroke();
+          // k-edges: v0→v3 and v1→v2
+          ctx.strokeStyle = familyColors[t.k];
+          ctx.beginPath();
+          ctx.moveTo(v[0][0], v[0][1]); ctx.lineTo(v[3][0], v[3][1]);
+          ctx.moveTo(v[1][0], v[1][1]); ctx.lineTo(v[2][0], v[2][1]);
+          ctx.stroke();
         }
-        ctx.stroke();
-
-        // Family 2 (blue): arcs at obtuse vertices
-        ctx.strokeStyle = 'rgba(120, 180, 240, 0.7)';
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
-        for (const t of tiles) {
-          const v = t.verts;
-          if (t.type === 'thick') {
-            // Arcs at v1 and v3 (108° obtuse vertices)
-            arcAtVertex(v[1], v[0], v[2], r2);
-            arcAtVertex(v[3], v[2], v[0], r2);
-          } else {
-            // Arcs at v0 and v2 (144° obtuse vertices)
-            arcAtVertex(v[0], v[3], v[1], r1);
-            arcAtVertex(v[2], v[1], v[3], r1);
-          }
-        }
-        ctx.stroke();
       }
 
       // Flash
@@ -667,7 +655,8 @@
         if (lastValidation.valid) {
           text += ` · VALID`;
         } else {
-          text += ` · INVALID (${lastValidation.inconsistencies} inconsistent, ${lastValidation.outOfRange} out of range)`;
+          const v = lastValidation;
+          text += ` · INVALID (${v.inconsistencies} inconsistent, ${v.outOfRange} out of range, ${v.positionErrors} position errors)`;
         }
       }
       infoEl.textContent = text;
@@ -721,6 +710,51 @@
         render();
       }
     });
+
+    // ─── Self-test: perform N flips and validate ──────
+    function selfTest(n = 20) {
+      console.log(`=== Self-test: ${n} flips ===`);
+      const v0 = validateTiling();
+      console.log(`Initial: ${v0.valid ? 'VALID' : 'INVALID'} (${tiles.length} tiles, ${flipSites.length} flippable)`);
+      if (!v0.valid) {
+        console.error('Initial tiling is invalid!', v0);
+        return;
+      }
+
+      for (let i = 0; i < n; i++) {
+        if (flipSites.length === 0) {
+          console.log(`No more flip sites after ${i} flips`);
+          break;
+        }
+        const fi = Math.floor(Math.random() * flipSites.length);
+        const site = flipSites[fi];
+        const before = tiles.length;
+        executeFlip(fi);
+        const v = lastValidation;
+
+        if (!v.valid) {
+          console.error(`INVALID after flip ${i + 1}!`, {
+            inconsistencies: v.inconsistencies,
+            outOfRange: v.outOfRange,
+            tilesBefore: before,
+            tilesAfter: tiles.length,
+          });
+          // Find and log the specific violations
+          for (const [key, d] of v.vertData) {
+            if (d.inconsistent) console.error(`  Inconsistent at ${key}: sum=${d.sum}`);
+            if (d.sum < 1 || d.sum > 4) console.error(`  Out of range at ${key}: sum=${d.sum}`);
+          }
+          return;
+        }
+        if (tiles.length !== before) {
+          console.error(`Tile count changed: ${before} → ${tiles.length}`);
+        }
+      }
+      console.log(`All ${n} flips VALID. Final: ${tiles.length} tiles, ${flipSites.length} flippable`);
+      render();
+    }
+    // Expose for console: selfTest(50)
+    window.selfTest = selfTest;
 
     window.addEventListener('resize', init);
 
