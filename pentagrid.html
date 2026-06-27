@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Penrose Phason Flips — Pentagrid</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a10; overflow: hidden; }
+    canvas { display: block; }
+    #info {
+      position: absolute; top: 12px; left: 16px;
+      color: rgba(255,255,255,0.35); font: 300 13px system-ui, sans-serif;
+      pointer-events: none; line-height: 1.6;
+    }
+    #help {
+      position: absolute; bottom: 12px; left: 0; right: 0;
+      text-align: center; pointer-events: none;
+      color: rgba(255,255,255,0.2); font: 300 11px system-ui, sans-serif;
+    }
+    #status {
+      position: absolute; top: 12px; right: 16px;
+      color: rgba(255,200,100,0.6); font: 300 13px system-ui, sans-serif;
+      pointer-events: none; text-align: right;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="info"></div>
+  <div id="status"></div>
+  <div id="help">hover flippable tiles · click to flip · Z undo · R reset · F toggle highlights · Space toggle edges</div>
+  <script>
+  (() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const infoEl = document.getElementById('info');
+    const statusEl = document.getElementById('status');
+
+    const pal = {
+      bg: '#1c1410',
+      thick: '#b8935a', thickEdge: '#6b4f2a',
+      thin: '#6b4c35', thinEdge: '#3d2518',
+      flipBorder: 'rgba(232, 200, 122, 0.3)',
+      hoverThick: '#d4b070',
+      hoverThin: '#907050',
+      hoverBorder: 'rgba(255, 255, 255, 0.6)',
+    };
+
+    const SZ = 40;
+
+    // ─── State ───────────────────────────────────────────
+
+    let tiles = [];           // [{ j, k, verts: [[x,y]×4], type: 'thick'|'thin' }]
+    let vertToTiles = null;   // Map<snapKey, tileIndex[]>
+    let flipSites = [];       // [{ vx, vy, tileIndices, cornerIndices, nearVerts, farVerts }]
+    let tileToFlips = null;   // Map<tileIndex, flipSiteIndex[]>
+    let undoStack = [];
+    let flipCount = 0;
+    let hoveredFlip = -1;
+    let showFlips = true;
+    let showOutlines = true;
+    let flashTime = 0;
+    let flashCenter = null;
+
+    // ─── Vertex snapping ─────────────────────────────────
+    // Round to nearest 0.25px — well within floating-point
+    // precision for sums of 5 terms of magnitude ~1200.
+
+    function vsnap(x, y) {
+      return (Math.round(x * 4)) + ',' + (Math.round(y * 4));
+    }
+
+    // ─── De Bruijn pentagrid → P3 rhombus tiling ─────────
+    //
+    // Five families of parallel lines at 72° intervals. Each
+    // intersection of two families (j < k) dualises to a rhombus.
+    // The grid offsets γ_k are the perpendicular-space coordinates
+    // — phason flips correspond to boundary events in this space.
+
+    function generateTiling() {
+      const w = window.innerWidth, h = window.innerHeight;
+      const cx = w / 2, cy = h / 2;
+      const rot = Math.random() * 2 * Math.PI;
+
+      // Five direction vectors (unit, rotated)
+      const e = [];
+      for (let k = 0; k < 5; k++) {
+        const a = 2 * Math.PI * k / 5 + rot;
+        e.push([Math.cos(a), Math.sin(a)]);
+      }
+
+      // Random grid offsets with de Bruijn's constraint: Σγ = 0 (eq. 4.1)
+      const gamma = [];
+      for (let k = 0; k < 5; k++) gamma.push(Math.random());
+      const mean = gamma.reduce((a, b) => a + b) / 5;
+      for (let k = 0; k < 5; k++) gamma[k] -= mean;
+      // Genericity guard: no grid line passes through an intersection of
+      // two others (would create degenerate vertices with >4 tiles)
+      // This is already generically true for random γ with Σγ=0.
+
+      const R = Math.hypot(w, h) / 2;
+      const maxN = Math.ceil(R / SZ) + 5;
+      const margin = SZ * 3;
+
+      tiles = [];
+
+      for (let j = 0; j < 5; j++) {
+        for (let k = j + 1; k < 5; k++) {
+          const det = e[j][0] * e[k][1] - e[k][0] * e[j][1];
+          if (Math.abs(det) < 1e-10) continue;
+
+          // Thick (72°) when |j-k| ∈ {1,4}, thin (36°) when {2,3}
+          const diff = k - j;
+          const type = (diff === 1 || diff === 4) ? 'thick' : 'thin';
+
+          for (let nj = -maxN; nj <= maxN; nj++) {
+            for (let nk = -maxN; nk <= maxN; nk++) {
+              // Intersection of line nj (family j) and line nk (family k)
+              const rj = nj - gamma[j];
+              const rk = nk - gamma[k];
+              const px = SZ * (rj * e[k][1] - rk * e[j][1]) / det;
+              const py = SZ * (rk * e[j][0] - rj * e[k][0]) / det;
+
+              // Cell indices for the other three families
+              const I = new Array(5);
+              I[j] = nj; I[k] = nk;
+              for (let l = 0; l < 5; l++) {
+                if (l === j || l === k) continue;
+                I[l] = Math.ceil((e[l][0] * px + e[l][1] * py) / SZ + gamma[l]);
+              }
+
+              // Dual vertex: V = SZ × Σ I_l × e_l, offset to viewport center
+              let vx = 0, vy = 0;
+              for (let l = 0; l < 5; l++) {
+                vx += I[l] * e[l][0];
+                vy += I[l] * e[l][1];
+              }
+              vx = vx * SZ + cx;
+              vy = vy * SZ + cy;
+
+              // Four parallelogram vertices: V, V+e_j, V+e_j+e_k, V+e_k
+              const ejx = SZ * e[j][0], ejy = SZ * e[j][1];
+              const ekx = SZ * e[k][0], eky = SZ * e[k][1];
+              const verts = [
+                [vx, vy],
+                [vx + ejx, vy + ejy],
+                [vx + ejx + ekx, vy + ejy + eky],
+                [vx + ekx, vy + eky],
+              ];
+
+              // Viewport clipping
+              let minX = verts[0][0], maxX = minX, minY = verts[0][1], maxY = minY;
+              for (let i = 1; i < 4; i++) {
+                if (verts[i][0] < minX) minX = verts[i][0];
+                if (verts[i][0] > maxX) maxX = verts[i][0];
+                if (verts[i][1] < minY) minY = verts[i][1];
+                if (verts[i][1] > maxY) maxY = verts[i][1];
+              }
+              if (maxX < -margin || minX > w + margin ||
+                  maxY < -margin || minY > h + margin) continue;
+
+              tiles.push({ j, k, verts, type });
+            }
+          }
+        }
+      }
+    }
+
+    // ─── Vertex → tile adjacency ─────────────────────────
+
+    function buildAdjacency() {
+      vertToTiles = new Map();
+      for (let ti = 0; ti < tiles.length; ti++) {
+        for (const v of tiles[ti].verts) {
+          const key = vsnap(v[0], v[1]);
+          let list = vertToTiles.get(key);
+          if (!list) { list = []; vertToTiles.set(key, list); }
+          list.push(ti);
+        }
+      }
+    }
+
+    // ─── Flip detection ──────────────────────────────────
+    //
+    // A vertex where exactly 3 tiles meet is a phason flip site.
+    // In the cut-and-project picture, this corresponds to a
+    // perpendicular-space point near the acceptance window boundary.
+    // The 3 tiles form a hexagon that can be re-tiled with 3
+    // different rhombi by reflecting the center vertex.
+
+    function detectFlips() {
+      flipSites = [];
+      tileToFlips = new Map();
+
+      for (const [key, tileIndices] of vertToTiles) {
+        if (tileIndices.length !== 3) continue;
+
+        // Verify: 3 tiles must use exactly 3 distinct grid families
+        const families = new Set();
+        for (const ti of tileIndices) {
+          families.add(tiles[ti].j);
+          families.add(tiles[ti].k);
+        }
+        if (families.size !== 3) continue;
+
+        // Find which corner of each tile is V (via snap key match)
+        const cornerIndices = [];
+        let valid = true;
+        for (const ti of tileIndices) {
+          const t = tiles[ti];
+          let ci = -1;
+          for (let i = 0; i < 4; i++) {
+            if (vsnap(t.verts[i][0], t.verts[i][1]) === key) {
+              ci = i; break;
+            }
+          }
+          if (ci < 0) { valid = false; break; }
+          cornerIndices.push(ci);
+        }
+        if (!valid) continue;
+
+        // Use actual vertex position from first tile (not snap key)
+        const ci0 = cornerIndices[0];
+        const vx = tiles[tileIndices[0]].verts[ci0][0];
+        const vy = tiles[tileIndices[0]].verts[ci0][1];
+
+        // Extract unique near vertices (adjacent to V, shared between tiles)
+        const nearKeys = new Map();
+        for (let i = 0; i < 3; i++) {
+          const t = tiles[tileIndices[i]];
+          const ci = cornerIndices[i];
+          for (const ni of [(ci + 1) % 4, (ci + 3) % 4]) {
+            const nv = t.verts[ni];
+            const nk = vsnap(nv[0], nv[1]);
+            if (!nearKeys.has(nk)) nearKeys.set(nk, nv);
+          }
+        }
+        if (nearKeys.size !== 3) continue;
+        const nearVerts = [...nearKeys.values()];
+
+        // Far vertices (opposite V in each tile)
+        const farVerts = cornerIndices.map((ci, i) =>
+          tiles[tileIndices[i]].verts[(ci + 2) % 4]
+        );
+
+        const flipIdx = flipSites.length;
+        flipSites.push({
+          vx, vy,
+          tileIndices: [...tileIndices],
+          cornerIndices: [...cornerIndices],
+          nearVerts, farVerts,
+        });
+
+        for (const ti of tileIndices) {
+          let list = tileToFlips.get(ti);
+          if (!list) { list = []; tileToFlips.set(ti, list); }
+          list.push(flipIdx);
+        }
+      }
+    }
+
+    // ─── Flip execution ──────────────────────────────────
+    //
+    // V' = P₁ + P₂ + P₃ − 2V
+    //
+    // Three parallelograms meeting at V with edge vectors v_a, v_b, v_c
+    // (from the pentagrid) get replaced by three parallelograms meeting
+    // at V' = V + v_a + v_b + v_c. Each new tile has the same family
+    // pair (hence same thick/thin type) with negated edge vectors.
+
+    function executeFlip(flipIdx) {
+      const site = flipSites[flipIdx];
+      const { vx, vy, tileIndices, cornerIndices, nearVerts } = site;
+
+      // Save undo state (deep copy)
+      undoStack.push(tiles.map(t => ({
+        j: t.j, k: t.k, type: t.type,
+        verts: t.verts.map(v => [v[0], v[1]]),
+      })));
+
+      // V' = P₁ + P₂ + P₃ − 2V
+      const vpx = nearVerts[0][0] + nearVerts[1][0] + nearVerts[2][0] - 2 * vx;
+      const vpy = nearVerts[0][1] + nearVerts[1][1] + nearVerts[2][1] - 2 * vy;
+
+      // Build 3 new tiles (same family pairs, negated edge vectors from V')
+      const newTiles = [];
+      for (let i = 0; i < 3; i++) {
+        const oldTile = tiles[tileIndices[i]];
+        const ci = cornerIndices[i];
+
+        // Edge vectors from V in the old tile
+        const ea = [
+          oldTile.verts[(ci + 1) % 4][0] - vx,
+          oldTile.verts[(ci + 1) % 4][1] - vy,
+        ];
+        const eb = [
+          oldTile.verts[(ci + 3) % 4][0] - vx,
+          oldTile.verts[(ci + 3) % 4][1] - vy,
+        ];
+
+        // New parallelogram: V', V'−ea, V'−ea−eb, V'−eb
+        newTiles.push({
+          j: oldTile.j, k: oldTile.k, type: oldTile.type,
+          verts: [
+            [vpx, vpy],
+            [vpx - ea[0], vpy - ea[1]],
+            [vpx - ea[0] - eb[0], vpy - ea[1] - eb[1]],
+            [vpx - eb[0], vpy - eb[1]],
+          ],
+        });
+      }
+
+      // Remove old tiles (descending order to keep indices valid)
+      const sorted = [...tileIndices].sort((a, b) => b - a);
+      for (const ti of sorted) tiles.splice(ti, 1);
+      tiles.push(...newTiles);
+
+      flipCount++;
+      flashTime = Date.now();
+      flashCenter = [vpx, vpy];
+
+      buildAdjacency();
+      detectFlips();
+    }
+
+    function undo() {
+      if (undoStack.length === 0) return;
+      tiles = undoStack.pop();
+      flipCount = Math.max(0, flipCount - 1);
+      buildAdjacency();
+      detectFlips();
+    }
+
+    // ─── Hit testing ─────────────────────────────────────
+
+    function pointInTri(px, py, A, B, C) {
+      const d1 = (px - B[0]) * (A[1] - B[1]) - (A[0] - B[0]) * (py - B[1]);
+      const d2 = (px - C[0]) * (B[1] - C[1]) - (B[0] - C[0]) * (py - C[1]);
+      const d3 = (px - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (py - A[1]);
+      return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+    }
+
+    function pointInQuad(px, py, v) {
+      return pointInTri(px, py, v[0], v[1], v[2]) ||
+             pointInTri(px, py, v[0], v[2], v[3]);
+    }
+
+    function findHoveredFlip(mx, my) {
+      if (!showFlips || !tileToFlips) return -1;
+      for (const [ti, flipIndices] of tileToFlips) {
+        if (ti < tiles.length && pointInQuad(mx, my, tiles[ti].verts)) {
+          return flipIndices[0];
+        }
+      }
+      return -1;
+    }
+
+    // ─── Hexagon boundary ────────────────────────────────
+
+    function getHexBoundary(site) {
+      const edges = new Map();
+      for (const ti of site.tileIndices) {
+        const v = tiles[ti].verts;
+        for (let i = 0; i < 4; i++) {
+          const a = v[i], b = v[(i + 1) % 4];
+          const ka = vsnap(a[0], a[1]), kb = vsnap(b[0], b[1]);
+          const key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+          const entry = edges.get(key);
+          if (entry) {
+            entry.count++;
+          } else {
+            edges.set(key, { count: 1, a, b });
+          }
+        }
+      }
+      const boundary = [];
+      for (const { count, a, b } of edges.values()) {
+        if (count === 1) boundary.push([a, b]);
+      }
+      return boundary;
+    }
+
+    // ─── Rendering ───────────────────────────────────────
+
+    function render() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth, h = window.innerHeight;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      ctx.fillStyle = pal.bg;
+      ctx.fillRect(0, 0, w, h);
+
+      // Hovered tile set
+      const hoveredTiles = new Set();
+      if (hoveredFlip >= 0 && hoveredFlip < flipSites.length) {
+        for (const ti of flipSites[hoveredFlip].tileIndices) {
+          hoveredTiles.add(ti);
+        }
+      }
+
+      // Pass 1: fill all tiles
+      for (let i = 0; i < tiles.length; i++) {
+        const t = tiles[i];
+        const v = t.verts;
+        ctx.beginPath();
+        ctx.moveTo(v[0][0], v[0][1]);
+        ctx.lineTo(v[1][0], v[1][1]);
+        ctx.lineTo(v[2][0], v[2][1]);
+        ctx.lineTo(v[3][0], v[3][1]);
+        ctx.closePath();
+
+        if (hoveredTiles.has(i)) {
+          ctx.fillStyle = t.type === 'thick' ? pal.hoverThick : pal.hoverThin;
+        } else {
+          ctx.fillStyle = t.type === 'thick' ? pal.thick : pal.thin;
+        }
+        ctx.fill();
+      }
+
+      // Pass 2: tile edges (batched by type)
+      if (showOutlines) {
+        for (const type of ['thick', 'thin']) {
+          ctx.strokeStyle = type === 'thick' ? pal.thickEdge : pal.thinEdge;
+          ctx.lineWidth = 0.5;
+          ctx.beginPath();
+          for (const t of tiles) {
+            if (t.type !== type) continue;
+            const v = t.verts;
+            ctx.moveTo(v[0][0], v[0][1]);
+            ctx.lineTo(v[1][0], v[1][1]);
+            ctx.lineTo(v[2][0], v[2][1]);
+            ctx.lineTo(v[3][0], v[3][1]);
+            ctx.closePath();
+          }
+          ctx.stroke();
+        }
+      }
+
+      // Pass 3: flip highlight borders (golden glow on flippable tiles)
+      if (showFlips && tileToFlips) {
+        ctx.strokeStyle = pal.flipBorder;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (const [ti] of tileToFlips) {
+          if (hoveredTiles.has(ti)) continue;
+          const v = tiles[ti].verts;
+          ctx.moveTo(v[0][0], v[0][1]);
+          ctx.lineTo(v[1][0], v[1][1]);
+          ctx.lineTo(v[2][0], v[2][1]);
+          ctx.lineTo(v[3][0], v[3][1]);
+          ctx.closePath();
+        }
+        ctx.stroke();
+      }
+
+      // Pass 4: hovered hexagon outline
+      if (hoveredFlip >= 0 && hoveredFlip < flipSites.length) {
+        const boundary = getHexBoundary(flipSites[hoveredFlip]);
+        ctx.strokeStyle = pal.hoverBorder;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (const [a, b] of boundary) {
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+        }
+        ctx.stroke();
+      }
+
+      // Flash animation on flip
+      if (flashTime > 0 && flashCenter) {
+        const elapsed = Date.now() - flashTime;
+        if (elapsed < 400) {
+          const alpha = 0.35 * (1 - elapsed / 400);
+          const r = SZ * 2.5;
+          const grad = ctx.createRadialGradient(
+            flashCenter[0], flashCenter[1], 0,
+            flashCenter[0], flashCenter[1], r,
+          );
+          grad.addColorStop(0, `rgba(232, 200, 122, ${alpha})`);
+          grad.addColorStop(1, 'rgba(232, 200, 122, 0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(
+            flashCenter[0] - r, flashCenter[1] - r, r * 2, r * 2,
+          );
+          requestAnimationFrame(render);
+        } else {
+          flashTime = 0;
+        }
+      }
+
+      updateInfo();
+    }
+
+    function updateInfo() {
+      const nThick = tiles.reduce((n, t) => n + (t.type === 'thick' ? 1 : 0), 0);
+      infoEl.textContent =
+        `${tiles.length} rhombi (${nThick} thick + ${tiles.length - nThick} thin) · ` +
+        `${flipSites.length} flippable · ${flipCount} flips`;
+      statusEl.textContent = hoveredFlip >= 0 ? 'click to flip' : '';
+    }
+
+    // ─── Interaction ─────────────────────────────────────
+
+    let lastMouse = { x: 0, y: 0 };
+
+    canvas.addEventListener('mousemove', e => {
+      lastMouse.x = e.clientX;
+      lastMouse.y = e.clientY;
+      const newHovered = findHoveredFlip(e.clientX, e.clientY);
+      if (newHovered !== hoveredFlip) {
+        hoveredFlip = newHovered;
+        render();
+      }
+      canvas.style.cursor = hoveredFlip >= 0 ? 'pointer' : 'default';
+    });
+
+    canvas.addEventListener('click', e => {
+      if (hoveredFlip >= 0 && hoveredFlip < flipSites.length) {
+        executeFlip(hoveredFlip);
+        hoveredFlip = findHoveredFlip(e.clientX, e.clientY);
+        render();
+      }
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'z' || e.key === 'Z') {
+        undo();
+        hoveredFlip = findHoveredFlip(lastMouse.x, lastMouse.y);
+        render();
+      } else if (e.key === 'r' || e.key === 'R') {
+        init();
+      } else if (e.key === 'f' || e.key === 'F') {
+        showFlips = !showFlips;
+        hoveredFlip = -1;
+        render();
+      } else if (e.key === ' ') {
+        e.preventDefault();
+        showOutlines = !showOutlines;
+        render();
+      }
+    });
+
+    window.addEventListener('resize', init);
+
+    function init() {
+      generateTiling();
+      buildAdjacency();
+      detectFlips();
+      undoStack = [];
+      flipCount = 0;
+      hoveredFlip = -1;
+      render();
+    }
+
+    // ─── Go ──────────────────────────────────────────────
+    init();
+  })();
+  </script>
+</body>
+</html>

@@ -50,8 +50,8 @@
     //
     // Five families of parallel lines at 72° intervals, with random
     // offsets γ_k. Each intersection of two families dualises to a
-    // rhombus tile. The offsets must satisfy Σγ ∉ ℤ (no triple
-    // intersections). Different offsets → genuinely different tilings.
+    // rhombus tile. The offsets must satisfy Σγ = 0 (de Bruijn eq. 4.1).
+    // Different offsets → genuinely different tilings.
 
     function renderTiling(cvs, ctx) {
       const dpr = window.devicePixelRatio || 1;
@@ -78,12 +78,11 @@
         e.push([Math.cos(a), Math.sin(a)]);
       }
 
-      // Random grid offsets — the source of genuine randomness
+      // Random grid offsets with de Bruijn's constraint: Σγ = 0 (eq. 4.1)
       const gamma = [];
       for (let k = 0; k < 5; k++) gamma.push(Math.random());
-      // Enforce genericity: Σγ must not be near an integer
-      const gsum = gamma.reduce((a, b) => a + b);
-      if (Math.abs(gsum - Math.round(gsum)) < 0.1) gamma[0] += 0.2;
+      const mean = gamma.reduce((a, b) => a + b) / 5;
+      for (let k = 0; k < 5; k++) gamma[k] -= mean;
 
       // Index range: dual vertices are ~2.5× further than grid intersections
       const R = Math.hypot(w, h) / 2;
@@ -116,7 +115,7 @@
               I[k] = nk;
               for (let l = 0; l < 5; l++) {
                 if (l === j || l === k) continue;
-                I[l] = Math.floor((e[l][0] * px + e[l][1] * py) / sz + gamma[l]);
+                I[l] = Math.ceil((e[l][0] * px + e[l][1] * py) / sz + gamma[l]);
               }
 
               // Dual vertex: V = sz × Σ I_l × e_l, offset to viewport center
