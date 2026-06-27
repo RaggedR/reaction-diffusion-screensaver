@@ -29,7 +29,7 @@
   <canvas id="c"></canvas>
   <div id="info"></div>
   <div id="status"></div>
-  <div id="help">hover flippable tiles · click to flip · Z undo · R reset · F toggle highlights · V vertex sums · Space toggle edges</div>
+  <div id="help">hover flippable tiles · click to flip · Z undo · R reset · F highlights · A arcs · V vertex sums · Space edges</div>
   <script>
   (() => {
     const canvas = document.getElementById('c');
@@ -67,7 +67,9 @@
     let flashTime = 0;
     let flashCenter = null;
     let showVertexSums = false;
+    let showArcs = true;
     let lastValidation = null;
+    const PHI = (1 + Math.sqrt(5)) / 2;
 
     // ─── Vertex snapping ─────────────────────────────
 
@@ -473,6 +475,20 @@
       return boundary;
     }
 
+    // ─── Arc helper ────────────────────────────────────
+
+    function arcAtVertex(center, ptA, ptB, radius) {
+      const angA = Math.atan2(ptA[1] - center[1], ptA[0] - center[0]);
+      const angB = Math.atan2(ptB[1] - center[1], ptB[0] - center[0]);
+      // Sweep through the interior (shorter) angle
+      const ccw = ((angB - angA) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+      ctx.moveTo(
+        center[0] + radius * Math.cos(angA),
+        center[1] + radius * Math.sin(angA),
+      );
+      ctx.arc(center[0], center[1], radius, angA, angB, ccw > Math.PI);
+    }
+
     // ─── Rendering ───────────────────────────────────
 
     function render() {
@@ -576,6 +592,50 @@
         }
       }
 
+      // Pass 6: Penrose arcs
+      // In a valid Penrose tiling, arcs at acute vertices form continuous
+      // curves across tile boundaries. Broken arcs = invalid tiling.
+      if (showArcs) {
+        const r1 = SZ / PHI;    // radius at thick 72° vertices
+        const r2 = SZ / (PHI * PHI);  // radius at thin 36° vertices
+
+        // Family 1 (gold): arcs at acute vertices
+        ctx.strokeStyle = 'rgba(240, 200, 100, 0.7)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (const t of tiles) {
+          const v = t.verts;
+          if (t.type === 'thick') {
+            // Arcs at v0 and v2 (72° acute vertices)
+            arcAtVertex(v[0], v[1], v[3], r1);
+            arcAtVertex(v[2], v[3], v[1], r1);
+          } else {
+            // Arcs at v1 and v3 (36° acute vertices)
+            arcAtVertex(v[1], v[2], v[0], r2);
+            arcAtVertex(v[3], v[0], v[2], r2);
+          }
+        }
+        ctx.stroke();
+
+        // Family 2 (blue): arcs at obtuse vertices
+        ctx.strokeStyle = 'rgba(120, 180, 240, 0.7)';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (const t of tiles) {
+          const v = t.verts;
+          if (t.type === 'thick') {
+            // Arcs at v1 and v3 (108° obtuse vertices)
+            arcAtVertex(v[1], v[0], v[2], r2);
+            arcAtVertex(v[3], v[2], v[0], r2);
+          } else {
+            // Arcs at v0 and v2 (144° obtuse vertices)
+            arcAtVertex(v[0], v[3], v[1], r1);
+            arcAtVertex(v[2], v[1], v[3], r1);
+          }
+        }
+        ctx.stroke();
+      }
+
       // Flash
       if (flashTime > 0 && flashCenter) {
         const elapsed = Date.now() - flashTime;
@@ -647,6 +707,9 @@
       } else if (e.key === 'f' || e.key === 'F') {
         showFlips = !showFlips;
         hoveredFlip = -1;
+        render();
+      } else if (e.key === 'a' || e.key === 'A') {
+        showArcs = !showArcs;
         render();
       } else if (e.key === 'v' || e.key === 'V') {
         showVertexSums = !showVertexSums;
