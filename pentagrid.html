@@ -38,20 +38,24 @@
     const statusEl = document.getElementById('status');
 
     const pal = {
-      bg: '#1c1410',
-      thick: '#b8935a', thickEdge: '#6b4f2a',
-      thin: '#6b4c35', thinEdge: '#3d2518',
+      bg: '#080c0c',
+      thick: '#3a9090', thickEdge: '#1a4848',
+      thin: '#c06050', thinEdge: '#603028',
       flipBorder: 'rgba(232, 200, 122, 0.3)',
-      hoverThick: '#d4b070',
-      hoverThin: '#907050',
+      hoverThick: '#5ad0d0',
+      hoverThin: '#e08070',
       hoverBorder: 'rgba(255, 255, 255, 0.6)',
     };
 
     const SZ = 40;
 
-    // ─── State ───────────────────────────────────────────
+    // ─── Grid state (needed for flip validation) ─────
 
-    let tiles = [];           // [{ j, k, verts: [[x,y]×4], type: 'thick'|'thin' }]
+    let gridE = [];           // direction vectors e[0..4]
+
+    // ─── State ───────────────────────────────────────
+
+    let tiles = [];           // [{ j, k, verts, type, I: [int×5] }]
     let vertToTiles = null;   // Map<snapKey, tileIndex[]>
     let flipSites = [];       // [{ vx, vy, tileIndices, cornerIndices, nearVerts, farVerts }]
     let tileToFlips = null;   // Map<tileIndex, flipSiteIndex[]>
@@ -63,41 +67,36 @@
     let flashTime = 0;
     let flashCenter = null;
 
-    // ─── Vertex snapping ─────────────────────────────────
-    // Round to nearest 0.25px — well within floating-point
-    // precision for sums of 5 terms of magnitude ~1200.
+    // ─── Vertex snapping ─────────────────────────────
 
     function vsnap(x, y) {
       return (Math.round(x * 4)) + ',' + (Math.round(y * 4));
     }
 
-    // ─── De Bruijn pentagrid → P3 rhombus tiling ─────────
+    // ─── De Bruijn pentagrid → P3 rhombus tiling ─────
     //
     // Five families of parallel lines at 72° intervals. Each
     // intersection of two families (j < k) dualises to a rhombus.
-    // The grid offsets γ_k are the perpendicular-space coordinates
-    // — phason flips correspond to boundary events in this space.
+    // Grid offsets γ_k satisfy Σγ = 0 (de Bruijn eq. 4.1).
+    // Index function K_j = ⌈Re(z·ζ⁻ʲ) + γ_j⌉ (eq. 4.3).
 
     function generateTiling() {
       const w = window.innerWidth, h = window.innerHeight;
       const cx = w / 2, cy = h / 2;
       const rot = Math.random() * 2 * Math.PI;
 
-      // Five direction vectors (unit, rotated)
-      const e = [];
+      gridE = [];
       for (let k = 0; k < 5; k++) {
         const a = 2 * Math.PI * k / 5 + rot;
-        e.push([Math.cos(a), Math.sin(a)]);
+        gridE.push([Math.cos(a), Math.sin(a)]);
       }
+      const e = gridE;
 
       // Random grid offsets with de Bruijn's constraint: Σγ = 0 (eq. 4.1)
       const gamma = [];
       for (let k = 0; k < 5; k++) gamma.push(Math.random());
       const mean = gamma.reduce((a, b) => a + b) / 5;
       for (let k = 0; k < 5; k++) gamma[k] -= mean;
-      // Genericity guard: no grid line passes through an intersection of
-      // two others (would create degenerate vertices with >4 tiles)
-      // This is already generically true for random γ with Σγ=0.
 
       const R = Math.hypot(w, h) / 2;
       const maxN = Math.ceil(R / SZ) + 5;
@@ -110,19 +109,16 @@
           const det = e[j][0] * e[k][1] - e[k][0] * e[j][1];
           if (Math.abs(det) < 1e-10) continue;
 
-          // Thick (72°) when |j-k| ∈ {1,4}, thin (36°) when {2,3}
           const diff = k - j;
           const type = (diff === 1 || diff === 4) ? 'thick' : 'thin';
 
           for (let nj = -maxN; nj <= maxN; nj++) {
             for (let nk = -maxN; nk <= maxN; nk++) {
-              // Intersection of line nj (family j) and line nk (family k)
               const rj = nj - gamma[j];
               const rk = nk - gamma[k];
               const px = SZ * (rj * e[k][1] - rk * e[j][1]) / det;
               const py = SZ * (rk * e[j][0] - rj * e[k][0]) / det;
 
-              // Cell indices for the other three families
               const I = new Array(5);
               I[j] = nj; I[k] = nk;
               for (let l = 0; l < 5; l++) {
@@ -130,7 +126,6 @@
                 I[l] = Math.ceil((e[l][0] * px + e[l][1] * py) / SZ + gamma[l]);
               }
 
-              // Dual vertex: V = SZ × Σ I_l × e_l, offset to viewport center
               let vx = 0, vy = 0;
               for (let l = 0; l < 5; l++) {
                 vx += I[l] * e[l][0];
@@ -139,7 +134,6 @@
               vx = vx * SZ + cx;
               vy = vy * SZ + cy;
 
-              // Four parallelogram vertices: V, V+e_j, V+e_j+e_k, V+e_k
               const ejx = SZ * e[j][0], ejy = SZ * e[j][1];
               const ekx = SZ * e[k][0], eky = SZ * e[k][1];
               const verts = [
@@ -149,7 +143,6 @@
                 [vx + ekx, vy + eky],
               ];
 
-              // Viewport clipping
               let minX = verts[0][0], maxX = minX, minY = verts[0][1], maxY = minY;
               for (let i = 1; i < 4; i++) {
                 if (verts[i][0] < minX) minX = verts[i][0];
@@ -160,14 +153,14 @@
               if (maxX < -margin || minX > w + margin ||
                   maxY < -margin || minY > h + margin) continue;
 
-              tiles.push({ j, k, verts, type });
+              tiles.push({ j, k, verts, type, I: I.slice() });
             }
           }
         }
       }
     }
 
-    // ─── Vertex → tile adjacency ─────────────────────────
+    // ─── Vertex → tile adjacency ─────────────────────
 
     function buildAdjacency() {
       vertToTiles = new Map();
@@ -181,13 +174,11 @@
       }
     }
 
-    // ─── Flip detection ──────────────────────────────────
+    // ─── Flip detection ──────────────────────────────
     //
-    // A vertex where exactly 3 tiles meet is a phason flip site.
-    // In the cut-and-project picture, this corresponds to a
-    // perpendicular-space point near the acceptance window boundary.
-    // The 3 tiles form a hexagon that can be re-tiled with 3
-    // different rhombi by reflecting the center vertex.
+    // A vertex where exactly 3 rhombi meet is a phason flip site.
+    // The 3 parallelograms form a hexagon that can be re-tiled
+    // by reflecting the center vertex: V' = P₁ + P₂ + P₃ − 2V.
 
     function detectFlips() {
       flipSites = [];
@@ -196,7 +187,6 @@
       for (const [key, tileIndices] of vertToTiles) {
         if (tileIndices.length !== 3) continue;
 
-        // Verify: 3 tiles must use exactly 3 distinct grid families
         const families = new Set();
         for (const ti of tileIndices) {
           families.add(tiles[ti].j);
@@ -204,7 +194,6 @@
         }
         if (families.size !== 3) continue;
 
-        // Find which corner of each tile is V (via snap key match)
         const cornerIndices = [];
         let valid = true;
         for (const ti of tileIndices) {
@@ -220,12 +209,34 @@
         }
         if (!valid) continue;
 
-        // Use actual vertex position from first tile (not snap key)
         const ci0 = cornerIndices[0];
         const vx = tiles[tileIndices[0]].verts[ci0][0];
         const vy = tiles[tileIndices[0]].verts[ci0][1];
 
-        // Extract unique near vertices (adjacent to V, shared between tiles)
+        // ── Validate via index sums (de Bruijn eq. 4.1) ──
+        // Compute index sum at V from first tile's stored I array.
+        // At corner ci of tile (j,k): sum = Σ I_l + (ci∈{1,3}?1 : ci===2?2 : 0)
+        const t0 = tiles[tileIndices[0]];
+        const sumBase = t0.I.reduce((a, b) => a + b, 0);
+        const sumV = sumBase + (ci0 === 1 || ci0 === 3 ? 1 : ci0 === 2 ? 2 : 0);
+
+        // Compute edge signs: for each of the 3 families, is the edge
+        // from V in the +e or -e direction?
+        // In tile (j,k) at corner ci: sign_j = (ci∈{0,3}) ? +1 : -1
+        //                              sign_k = (ci∈{0,1}) ? +1 : -1
+        const famSign = {};
+        for (let i = 0; i < 3; i++) {
+          const t = tiles[tileIndices[i]];
+          const ci = cornerIndices[i];
+          famSign[t.j] = (ci === 0 || ci === 3) ? 1 : -1;
+          famSign[t.k] = (ci === 0 || ci === 1) ? 1 : -1;
+        }
+        const netChange = Object.values(famSign).reduce((a, b) => a + b, 0);
+        const sumVp = sumV + netChange;
+
+        // V' must also have valid index sum
+        if (sumVp < 1 || sumVp > 4) continue;
+
         const nearKeys = new Map();
         for (let i = 0; i < 3; i++) {
           const t = tiles[tileIndices[i]];
@@ -239,7 +250,6 @@
         if (nearKeys.size !== 3) continue;
         const nearVerts = [...nearKeys.values()];
 
-        // Far vertices (opposite V in each tile)
         const farVerts = cornerIndices.map((ci, i) =>
           tiles[tileIndices[i]].verts[(ci + 2) % 4]
         );
@@ -260,36 +270,49 @@
       }
     }
 
-    // ─── Flip execution ──────────────────────────────────
-    //
-    // V' = P₁ + P₂ + P₃ − 2V
-    //
-    // Three parallelograms meeting at V with edge vectors v_a, v_b, v_c
-    // (from the pentagrid) get replaced by three parallelograms meeting
-    // at V' = V + v_a + v_b + v_c. Each new tile has the same family
-    // pair (hence same thick/thin type) with negated edge vectors.
+    // ─── Flip execution ──────────────────────────────
 
     function executeFlip(flipIdx) {
       const site = flipSites[flipIdx];
       const { vx, vy, tileIndices, cornerIndices, nearVerts } = site;
 
-      // Save undo state (deep copy)
       undoStack.push(tiles.map(t => ({
         j: t.j, k: t.k, type: t.type,
         verts: t.verts.map(v => [v[0], v[1]]),
+        I: t.I.slice(),
       })));
+
+      // Compute I at V from first tile
+      const t0 = tiles[tileIndices[0]];
+      const ci0 = cornerIndices[0];
+      const I_V = t0.I.slice();
+      if (ci0 === 1 || ci0 === 2) I_V[t0.j] += 1;
+      if (ci0 === 2 || ci0 === 3) I_V[t0.k] += 1;
+
+      // Compute edge signs for the 3 families
+      const famSign = {};
+      for (let i = 0; i < 3; i++) {
+        const t = tiles[tileIndices[i]];
+        const ci = cornerIndices[i];
+        famSign[t.j] = (ci === 0 || ci === 3) ? 1 : -1;
+        famSign[t.k] = (ci === 0 || ci === 1) ? 1 : -1;
+      }
+
+      // I at V'
+      const I_Vp = I_V.slice();
+      for (const [fam, sign] of Object.entries(famSign)) {
+        I_Vp[+fam] += sign;
+      }
 
       // V' = P₁ + P₂ + P₃ − 2V
       const vpx = nearVerts[0][0] + nearVerts[1][0] + nearVerts[2][0] - 2 * vx;
       const vpy = nearVerts[0][1] + nearVerts[1][1] + nearVerts[2][1] - 2 * vy;
 
-      // Build 3 new tiles (same family pairs, negated edge vectors from V')
       const newTiles = [];
       for (let i = 0; i < 3; i++) {
         const oldTile = tiles[tileIndices[i]];
         const ci = cornerIndices[i];
 
-        // Edge vectors from V in the old tile
         const ea = [
           oldTile.verts[(ci + 1) % 4][0] - vx,
           oldTile.verts[(ci + 1) % 4][1] - vy,
@@ -299,19 +322,35 @@
           oldTile.verts[(ci + 3) % 4][1] - vy,
         ];
 
-        // New parallelogram: V', V'−ea, V'−ea−eb, V'−eb
+        // Raw new vertices: [V', V'-ea, V'-ea-eb, V'-eb]
+        const rawVerts = [
+          [vpx, vpy],
+          [vpx - ea[0], vpy - ea[1]],
+          [vpx - ea[0] - eb[0], vpy - ea[1] - eb[1]],
+          [vpx - eb[0], vpy - eb[1]],
+        ];
+
+        // Reorder so v0→v1 = +SZ·e_j (canonical convention)
+        // Shift = (6 - ci) % 4 = (2 - ci + 4) % 4
+        const shift = ((6 - ci) % 4);
+        const verts = [
+          rawVerts[shift % 4],
+          rawVerts[(shift + 1) % 4],
+          rawVerts[(shift + 2) % 4],
+          rawVerts[(shift + 3) % 4],
+        ];
+
+        // I at v0 of new tile: I_Vp adjusted for the canonical corner
+        const newI = I_Vp.slice();
+        if (ci === 0 || ci === 3) newI[oldTile.j] -= 1;
+        if (ci === 0 || ci === 1) newI[oldTile.k] -= 1;
+
         newTiles.push({
           j: oldTile.j, k: oldTile.k, type: oldTile.type,
-          verts: [
-            [vpx, vpy],
-            [vpx - ea[0], vpy - ea[1]],
-            [vpx - ea[0] - eb[0], vpy - ea[1] - eb[1]],
-            [vpx - eb[0], vpy - eb[1]],
-          ],
+          verts, I: newI,
         });
       }
 
-      // Remove old tiles (descending order to keep indices valid)
       const sorted = [...tileIndices].sort((a, b) => b - a);
       for (const ti of sorted) tiles.splice(ti, 1);
       tiles.push(...newTiles);
@@ -332,7 +371,7 @@
       detectFlips();
     }
 
-    // ─── Hit testing ─────────────────────────────────────
+    // ─── Hit testing ─────────────────────────────────
 
     function pointInTri(px, py, A, B, C) {
       const d1 = (px - B[0]) * (A[1] - B[1]) - (A[0] - B[0]) * (py - B[1]);
@@ -356,7 +395,7 @@
       return -1;
     }
 
-    // ─── Hexagon boundary ────────────────────────────────
+    // ─── Hexagon boundary ────────────────────────────
 
     function getHexBoundary(site) {
       const edges = new Map();
@@ -367,11 +406,8 @@
           const ka = vsnap(a[0], a[1]), kb = vsnap(b[0], b[1]);
           const key = ka < kb ? ka + '|' + kb : kb + '|' + ka;
           const entry = edges.get(key);
-          if (entry) {
-            entry.count++;
-          } else {
-            edges.set(key, { count: 1, a, b });
-          }
+          if (entry) { entry.count++; }
+          else { edges.set(key, { count: 1, a, b }); }
         }
       }
       const boundary = [];
@@ -381,7 +417,7 @@
       return boundary;
     }
 
-    // ─── Rendering ───────────────────────────────────────
+    // ─── Rendering ───────────────────────────────────
 
     function render() {
       const dpr = window.devicePixelRatio || 1;
@@ -393,7 +429,6 @@
       ctx.fillStyle = pal.bg;
       ctx.fillRect(0, 0, w, h);
 
-      // Hovered tile set
       const hoveredTiles = new Set();
       if (hoveredFlip >= 0 && hoveredFlip < flipSites.length) {
         for (const ti of flipSites[hoveredFlip].tileIndices) {
@@ -401,7 +436,7 @@
         }
       }
 
-      // Pass 1: fill all tiles
+      // Pass 1: fill
       for (let i = 0; i < tiles.length; i++) {
         const t = tiles[i];
         const v = t.verts;
@@ -420,11 +455,11 @@
         ctx.fill();
       }
 
-      // Pass 2: tile edges (batched by type)
+      // Pass 2: edges
       if (showOutlines) {
         for (const type of ['thick', 'thin']) {
           ctx.strokeStyle = type === 'thick' ? pal.thickEdge : pal.thinEdge;
-          ctx.lineWidth = 0.5;
+          ctx.lineWidth = 0.8;
           ctx.beginPath();
           for (const t of tiles) {
             if (t.type !== type) continue;
@@ -439,7 +474,7 @@
         }
       }
 
-      // Pass 3: flip highlight borders (golden glow on flippable tiles)
+      // Pass 3: flip highlights
       if (showFlips && tileToFlips) {
         ctx.strokeStyle = pal.flipBorder;
         ctx.lineWidth = 1.5;
@@ -456,7 +491,7 @@
         ctx.stroke();
       }
 
-      // Pass 4: hovered hexagon outline
+      // Pass 4: hovered hexagon
       if (hoveredFlip >= 0 && hoveredFlip < flipSites.length) {
         const boundary = getHexBoundary(flipSites[hoveredFlip]);
         ctx.strokeStyle = pal.hoverBorder;
@@ -469,7 +504,7 @@
         ctx.stroke();
       }
 
-      // Flash animation on flip
+      // Flash
       if (flashTime > 0 && flashCenter) {
         const elapsed = Date.now() - flashTime;
         if (elapsed < 400) {
@@ -482,9 +517,7 @@
           grad.addColorStop(0, `rgba(232, 200, 122, ${alpha})`);
           grad.addColorStop(1, 'rgba(232, 200, 122, 0)');
           ctx.fillStyle = grad;
-          ctx.fillRect(
-            flashCenter[0] - r, flashCenter[1] - r, r * 2, r * 2,
-          );
+          ctx.fillRect(flashCenter[0] - r, flashCenter[1] - r, r * 2, r * 2);
           requestAnimationFrame(render);
         } else {
           flashTime = 0;
@@ -502,7 +535,7 @@
       statusEl.textContent = hoveredFlip >= 0 ? 'click to flip' : '';
     }
 
-    // ─── Interaction ─────────────────────────────────────
+    // ─── Interaction ─────────────────────────────────
 
     let lastMouse = { x: 0, y: 0 };
 
@@ -555,7 +588,6 @@
       render();
     }
 
-    // ─── Go ──────────────────────────────────────────────
     init();
   })();
   </script>
