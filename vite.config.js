@@ -23,6 +23,7 @@ export default defineConfig({
         kiteDecomposition: resolve(__dirname, 'kite-decomposition.html'),
         randomSubstitution: resolve(__dirname, 'random-substitution.html'),
         randomSubstitutionScreensaver: resolve(__dirname, 'random-substitution-screensaver.html'),
+        pentagrid: resolve(__dirname, 'pentagrid.html'),
       }
     }
   }
